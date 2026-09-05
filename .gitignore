@@ -1,0 +1,10 @@
+# Local working notes — NOT for the public repo.
+# Contains employer-confidential material and an unfiled security report.
+# Publish sanitized findings deliberately, never by default.
+thoughts/
+.atl/
+
+# Go
+tare
+*.test
+*.out

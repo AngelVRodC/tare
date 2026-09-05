@@ -29,13 +29,24 @@ type Event struct {
 	AttributionMcpServer string `json:"attributionMcpServer"`
 	AttributionMcpTool   string `json:"attributionMcpTool"`
 
-	// Message and ToolUseResult vary in shape across event types. Phases 2-3
-	// decode them; Phase 1 only carries them.
+	// Message, ToolUseResult and AttachmentRaw vary in shape across event
+	// types. Phases 2-3 decode them; Phase 1 only carries them. AttachmentRaw
+	// wears the suffix because Attachment is the decoded type it yields.
 	Message       json.RawMessage `json:"message"`
 	ToolUseResult json.RawMessage `json:"toolUseResult"`
+	AttachmentRaw json.RawMessage `json:"attachment"`
+
+	// TotalCostUSD and ModelUsage are the `cost-state` billing record. It is
+	// written once per session and these are zero on every other event.
+	TotalCostUSD float64         `json:"totalCostUSD"`
+	ModelUsage   json.RawMessage `json:"modelUsage"`
 
 	// File is the transcript this event was read from. Not a transcript field.
 	File string `json:"-"`
+	// LineBytes is the length of the JSONL line this event was decoded from,
+	// newline excluded. It is how attachment volume is measured — the cost of
+	// an attachment is the line it occupies. Not a transcript field.
+	LineBytes int64 `json:"-"`
 	// InSubagentDir reports whether File sits under a `subagents/` directory.
 	// One file is not one session: subagent transcripts share the parent
 	// sessionId with their own agentId. Not a transcript field.

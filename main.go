@@ -56,6 +56,15 @@ func run(args []string, out io.Writer) error {
 			return report.WriteJSON(out, env)
 		}
 		return report.RenderTools(out, env)
+	case "attribute":
+		env, err := report.AttributeEnvelope(*dir, version)
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return report.WriteJSON(out, env)
+		}
+		return report.RenderAttribute(out, env)
 	default:
 		usage(os.Stderr)
 		return fmt.Errorf("unknown command %q", cmd)
@@ -77,8 +86,9 @@ func usage(w io.Writer) {
 usage: tare <command> [flags]
 
 commands:
-  scan   corpus inventory: files, bytes, date range, per-type event counts
-  tools  per-tool call counts, context bytes, produced bytes and errors
+  scan       corpus inventory: files, bytes, date range, per-type event counts
+  tools      per-tool call counts, context bytes, produced bytes and errors
+  attribute  tokens by skill/plugin/agent/MCP, context re-billing, attachment volume
 
 flags (given after the command):
   --dir string   transcript root (default ~/.claude/projects)

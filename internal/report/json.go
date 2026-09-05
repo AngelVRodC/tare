@@ -58,6 +58,20 @@ func MeasuredMetric(name, dimension, key string, value any, unit string) Metric 
 	}
 }
 
+// EstimatedMetric builds a row that was derived rather than read, and names
+// the method it was derived by. Validate rejects one with no method.
+func EstimatedMetric(name, dimension, key string, value any, unit, method string) Metric {
+	return Metric{
+		Name:       name,
+		Dimension:  dimension,
+		Key:        key,
+		Value:      value,
+		Unit:       unit,
+		Derivation: Estimated,
+		Method:     &method,
+	}
+}
+
 // Validate rejects an envelope that breaks the contract: an unknown or missing
 // derivation, or an estimated row with no method named. Anything a command
 // could not compute belongs in Warnings, never omitted silently.

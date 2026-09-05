@@ -165,6 +165,10 @@ func formatValue(v any) string {
 		return comma(int64(n))
 	case int64:
 		return comma(n)
+	case float64:
+		// 'g' keeps a 23.6x multiplier readable and a $0.0000149 allocation
+		// honest, rather than rounding the second one away to zero.
+		return strconv.FormatFloat(n, 'g', 6, 64)
 	}
 	return fmt.Sprint(v)
 }

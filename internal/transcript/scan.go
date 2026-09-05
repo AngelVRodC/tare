@@ -70,7 +70,7 @@ func scanFile(path string, stats *ScanStats, visit func(*Event)) error {
 		stats.Bytes += int64(len(line))
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
 			stats.Lines++
-			ev := Event{File: path, InSubagentDir: sidechainFile}
+			ev := Event{File: path, InSubagentDir: sidechainFile, LineBytes: int64(len(trimmed))}
 			if err := json.Unmarshal([]byte(trimmed), &ev); err != nil {
 				stats.ParseErrors++
 			} else {

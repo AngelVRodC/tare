@@ -14,24 +14,37 @@ func resultEvent(id, content string) string {
 
 // TestContentShapes pins the pinned byte definition against both shapes the
 // corpus contains: a string `content` (12,763 measured) and an array of blocks
-// (1,363 measured). Array blocks with no text — `tool_reference` and `image`
-// on the corpus — contribute nothing, because nothing textual is what they
-// put into context.
+// (1,363 measured).
+//
+// The image cases are the ones that matter. An `image` block carries no `text`
+// field, so a text-only sum scores it zero — which is how 2,348,764 bytes of
+// screenshot went missing from `Read` and made the plan's baseline look
+// unreproducible. Images are counted, in their own field, never folded into
+// ContextBytes.
 func TestContentShapes(t *testing.T) {
 	cases := []struct {
-		name    string
-		content string
-		want    int64
+		name      string
+		content   string
+		want      int64
+		wantImage int64
 	}{
-		{"string", `"hello"`, 5},
-		{"string is counted in utf-8 bytes, not runes", `"héllo·ñ"`, 10},
-		{"array of text blocks sums their text", `[{"type":"text","text":"ab"},{"type":"text","text":"cde"}]`, 5},
-		{"array text is counted in utf-8 bytes", `[{"type":"text","text":"héllo"}]`, 6},
-		{"non-text array blocks contribute nothing",
-			`[{"type":"text","text":"abc"},{"type":"tool_reference","name":"Read"},{"type":"image","source":{"data":"AAAA"}}]`, 3},
-		{"empty array", `[]`, 0},
-		{"null content is zero, not an error", `null`, 0},
-		{"unknown shape is zero, not an error", `{"weird":true}`, 0},
+		{"string", `"hello"`, 5, 0},
+		{"string is counted in utf-8 bytes, not runes", `"héllo·ñ"`, 10, 0},
+		{"array of text blocks sums their text", `[{"type":"text","text":"ab"},{"type":"text","text":"cde"}]`, 5, 0},
+		{"array text is counted in utf-8 bytes", `[{"type":"text","text":"héllo"}]`, 6, 0},
+		{"image payload is counted apart from text, not dropped",
+			`[{"type":"text","text":"abc"},{"type":"image","source":{"data":"AAAA"}}]`, 3, 4},
+		{"an image-only result is not zero bytes",
+			`[{"type":"image","source":{"type":"base64","data":"QUJDREVG"}}]`, 0, 8},
+		{"two images sum",
+			`[{"type":"image","source":{"data":"AA"}},{"type":"image","source":{"data":"BBBB"}}]`, 0, 6},
+		{"a url-sourced image has no inline bytes to count",
+			`[{"type":"image","source":{"type":"url","url":"https://example.test/a.png"}}]`, 0, 0},
+		{"other non-text blocks still contribute nothing",
+			`[{"type":"text","text":"abc"},{"type":"tool_reference","name":"Read"}]`, 3, 0},
+		{"empty array", `[]`, 0, 0},
+		{"null content is zero, not an error", `null`, 0, 0},
+		{"unknown shape is zero, not an error", `{"weird":true}`, 0, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,6 +67,9 @@ func TestContentShapes(t *testing.T) {
 			}
 			if got[0].ContextBytes != tc.want {
 				t.Errorf("ContextBytes = %d, want %d", got[0].ContextBytes, tc.want)
+			}
+			if got[0].ImageBytes != tc.wantImage {
+				t.Errorf("ImageBytes = %d, want %d", got[0].ImageBytes, tc.wantImage)
 			}
 			if got[0].ToolUseID != "toolu_1" {
 				t.Errorf("ToolUseID = %q, want toolu_1", got[0].ToolUseID)

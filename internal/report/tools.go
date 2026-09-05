@@ -16,13 +16,15 @@ import (
 type toolStat struct {
 	Calls         int64
 	ContextBytes  int64
+	ImageBytes    int64
 	ProducedBytes int64
 	Errors        int64
 }
 
-func (s *toolStat) add(ctx, produced int64, isError bool) {
+func (s *toolStat) add(ctx, image, produced int64, isError bool) {
 	s.Calls++
 	s.ContextBytes += ctx
+	s.ImageBytes += image
 	s.ProducedBytes += produced
 	if isError {
 		s.Errors++
@@ -44,6 +46,7 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 
 	var useBlocks, resultBlocks, unmatched int64
 	var extResults, extProduced, extContext int64
+	var imageBlocks int64
 	var warnings []string
 	var from, to string
 
@@ -98,7 +101,12 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 			}
 			answered[r.ToolUseID] = true
 
-			produced := r.ContextBytes
+			// Inline: what was produced is what arrived — text and image
+			// alike. Externalised results overwrite this below.
+			produced := r.ContextBytes + r.ImageBytes
+			if r.ImageBytes > 0 {
+				imageBlocks++
+			}
 			if persisted != nil {
 				produced = persisted.Size
 				extResults++
@@ -116,9 +124,9 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 				}
 			}
 
-			stat(tools, name).add(r.ContextBytes, produced, r.IsError)
+			stat(tools, name).add(r.ContextBytes, r.ImageBytes, produced, r.IsError)
 			if server, _, isMCP := splitMCP(name); isMCP {
-				stat(servers, server).add(r.ContextBytes, produced, r.IsError)
+				stat(servers, server).add(r.ContextBytes, r.ImageBytes, produced, r.IsError)
 			}
 		}
 	})
@@ -145,6 +153,7 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 	for _, s := range tools {
 		totals.Calls += s.Calls
 		totals.ContextBytes += s.ContextBytes
+		totals.ImageBytes += s.ImageBytes
 		totals.ProducedBytes += s.ProducedBytes
 		totals.Errors += s.Errors
 	}
@@ -162,6 +171,8 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 	add("distinct_tools", len(tools), "tools")
 	add("calls", totals.Calls, "calls")
 	add("context_bytes", totals.ContextBytes, "bytes")
+	add("image_bytes", totals.ImageBytes, "bytes")
+	add("image_results", imageBlocks, "results")
 	add("produced_bytes", totals.ProducedBytes, "bytes")
 	add("errors", totals.Errors, "calls")
 	add("externalised_results", extResults, "results")
@@ -194,7 +205,7 @@ func splitMCP(name string) (server, tool string, ok bool) {
 	return server, tool, true
 }
 
-// statMetrics emits four rows per key, heaviest context first, so the table
+// statMetrics emits five rows per key, heaviest context first, so the table
 // can group consecutive rows without re-sorting what the envelope already
 // ordered.
 func statMetrics(dimension string, stats map[string]*toolStat) []Metric {
@@ -203,12 +214,13 @@ func statMetrics(dimension string, stats map[string]*toolStat) []Metric {
 			cmp.Compare(stats[b].ContextBytes, stats[a].ContextBytes),
 			strings.Compare(a, b))
 	})
-	out := make([]Metric, 0, len(keys)*4)
+	out := make([]Metric, 0, len(keys)*5)
 	for _, k := range keys {
 		s := stats[k]
 		out = append(out,
 			MeasuredMetric("calls", dimension, k, s.Calls, "calls"),
 			MeasuredMetric("context_bytes", dimension, k, s.ContextBytes, "bytes"),
+			MeasuredMetric("image_bytes", dimension, k, s.ImageBytes, "bytes"),
 			MeasuredMetric("produced_bytes", dimension, k, s.ProducedBytes, "bytes"),
 			MeasuredMetric("errors", dimension, k, s.Errors, "calls"),
 		)
@@ -234,11 +246,12 @@ func RenderTools(w io.Writer, env Envelope) error {
 		if len(rows) == 0 {
 			continue
 		}
-		fmt.Fprintf(tw, "\n%s\tCALLS\tCONTEXT\tPRODUCED\tERRORS\n", strings.ToUpper(dim))
+		fmt.Fprintf(tw, "\n%s\tCALLS\tCONTEXT\tIMAGES\tPRODUCED\tERRORS\n", strings.ToUpper(dim))
 		for _, r := range rows {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", r.key,
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
 				formatValue(r.values["calls"]),
 				formatValue(r.values["context_bytes"]),
+				formatValue(r.values["image_bytes"]),
 				formatValue(r.values["produced_bytes"]),
 				formatValue(r.values["errors"]))
 		}

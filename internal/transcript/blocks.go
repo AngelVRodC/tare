@@ -11,12 +11,15 @@ type ToolUse struct {
 // ToolResult is a `tool_result` content block: the answer that came back.
 //
 // ContextBytes is the pinned byte definition — the decoded UTF-8 byte length
-// of the text the model actually received. JSON-encoding length was the
+// of the *text* the model actually received. JSON-encoding length was the
 // rejected alternative: measured on the corpus it runs 3.8% high overall and
 // 12.0% high on the busiest MCP tool, which is escaping, not noise.
+//
+// ImageBytes is counted apart from it, never folded in. See contentBytes.
 type ToolResult struct {
 	ToolUseID    string
 	ContextBytes int64
+	ImageBytes   int64
 	IsError      bool
 }
 
@@ -48,7 +51,8 @@ func (ev *Event) Blocks() (uses []ToolUse, results []ToolResult) {
 		case "tool_result":
 			results = append(results, ToolResult{
 				ToolUseID:    b.ToolUseID,
-				ContextBytes: int64(b.Content),
+				ContextBytes: b.Content.Text,
+				ImageBytes:   b.Content.Image,
 				IsError:      b.IsError,
 			})
 		}
@@ -58,30 +62,50 @@ func (ev *Event) Blocks() (uses []ToolUse, results []ToolResult) {
 
 // contentBytes measures a `content` field without retaining it. The field is a
 // string in most results and an array of blocks in a minority (measured
-// 12,763 string / 1,363 array), so both shapes reduce to one byte count here
-// rather than at every call site. Array blocks that carry no text — the
-// `tool_reference` and `image` blocks on the corpus — contribute nothing,
-// because nothing textual is what they put into context.
-type contentBytes int64
+// 12,763 string / 1,363 array), so both shapes reduce to byte counts here
+// rather than at every call site.
+//
+// Text and image payloads are counted apart, on purpose. An `image` block —
+// a screenshot, a PDF page — carries no `text` field at all, so a text-only
+// sum reports *zero* for the most expensive thing a tool can put into the
+// window. Measured on the corpus: 15 image blocks holding 2,348,764 base64
+// bytes, every one of them silently zero under a text-only rule, which is
+// what made the plan's `Read` baseline look unreproducible.
+//
+// They are not folded into ContextBytes because the two do not convert at the
+// same rate: text is billed per token off its bytes, an image is billed by its
+// dimensions (~w*h/750 tokens) regardless of how long its base64 happens to
+// be. Phase 3 attributes tokens, so mixing them here would distort it.
+type contentBytes struct {
+	Text  int64
+	Image int64
+}
 
 // UnmarshalJSON never fails: a shape outside string-or-array measures zero
 // rather than poisoning the whole event. Unknown shape, quiet counter.
 func (c *contentBytes) UnmarshalJSON(b []byte) error {
 	var s string
 	if json.Unmarshal(b, &s) == nil {
-		*c = contentBytes(len(s)) // len of a Go string is its UTF-8 byte count
+		c.Text = int64(len(s)) // len of a Go string is its UTF-8 byte count
 		return nil
 	}
 	var blocks []struct {
-		Text string `json:"text"`
+		Type   string `json:"type"`
+		Text   string `json:"text"`
+		Source struct {
+			Data string `json:"data"`
+		} `json:"source"`
 	}
 	if json.Unmarshal(b, &blocks) != nil {
 		return nil
 	}
-	n := 0
 	for _, blk := range blocks {
-		n += len(blk.Text)
+		c.Text += int64(len(blk.Text))
+		// A url-sourced image carries no inline data and measures zero here;
+		// its bytes never entered the transcript to be counted.
+		if blk.Type == "image" {
+			c.Image += int64(len(blk.Source.Data))
+		}
 	}
-	*c = contentBytes(n)
 	return nil
 }

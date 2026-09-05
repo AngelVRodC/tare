@@ -4,6 +4,10 @@
 thoughts/
 .atl/
 
+# Local agent tooling (project-scoped Claude Code skills)
+.claude/
+CLAUDE.md
+
 # Go
 tare
 *.test

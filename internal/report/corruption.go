@@ -150,6 +150,7 @@ func corruptMetrics(tools map[string]*corruptStat) []Metric {
 // source was unavailable" reads, and it is never a table of zeros.
 func writeScalars(tw io.Writer, env Envelope, dimension string) {
 	var wrote bool
+	uniform := uniformDerivation(env.Metrics, dimension)
 	for _, m := range env.Metrics {
 		if m.Dimension != dimension || m.Key != "" {
 			continue
@@ -158,7 +159,10 @@ func writeScalars(tw io.Writer, env Envelope, dimension string) {
 			fmt.Fprintf(tw, "\n%s\t\t\t\t\t\n", strings.ToUpper(dimension))
 			wrote = true
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t\t\t\n", m.Name, formatValue(m.Value, m.Unit), m.Derivation)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t\t\t\n", m.Name, formatValue(m.Value, m.Unit), derivationCell(m, uniform))
+	}
+	if wrote {
+		writeDerivationFooter(tw, uniform, "\t\t\t\t\t")
 	}
 }
 

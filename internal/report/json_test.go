@@ -163,3 +163,41 @@ func TestRenderScanReadsEnvelope(t *testing.T) {
 		}
 	}
 }
+
+// TestDerivationColumnOnlyWhenMixed pins the rule that replaced a column
+// printing "measured" on all 60 rows: the per-row tag renders only where a
+// block genuinely mixes derivations, and a uniform block says it once.
+func TestDerivationColumnOnlyWhenMixed(t *testing.T) {
+	render := func(t *testing.T, metrics []Metric) string {
+		t.Helper()
+		var buf bytes.Buffer
+		env := Envelope{Tool: "tare", Command: "scan", Metrics: metrics, Warnings: []string{}}
+		if err := RenderScan(&buf, env); err != nil {
+			t.Fatalf("RenderScan: %v", err)
+		}
+		return buf.String()
+	}
+
+	uniform := render(t, []Metric{
+		MeasuredMetric("files", "corpus", "", int64(3), "files"),
+		MeasuredMetric("bytes", "corpus", "", int64(9000), "bytes"),
+	})
+	if !strings.Contains(uniform, "all rows measured") {
+		t.Errorf("uniform block should carry the footer\n%s", uniform)
+	}
+	// Two rows plus the footer: the word appears once, not once per row.
+	if got := strings.Count(uniform, "measured"); got != 1 {
+		t.Errorf("want 'measured' exactly once (the footer), got %d\n%s", got, uniform)
+	}
+
+	mixed := render(t, []Metric{
+		MeasuredMetric("files", "corpus", "", int64(3), "files"),
+		EstimatedMetric("cost_usd", "corpus", "", 1.5, "usd", "priced from cost-state"),
+	})
+	if strings.Contains(mixed, "all rows") {
+		t.Errorf("mixed block must not collapse to a footer\n%s", mixed)
+	}
+	if !strings.Contains(mixed, "measured") || !strings.Contains(mixed, "estimated") {
+		t.Errorf("mixed block must keep the per-row column\n%s", mixed)
+	}
+}

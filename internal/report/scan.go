@@ -90,19 +90,62 @@ func cachedSessions(path string) (int, error) {
 func RenderScan(w io.Writer, env Envelope) error {
 	renderHeader(w, env)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	section := ""
+	section, uniform := "", ""
 	for _, m := range env.Metrics {
 		if m.Dimension != section {
+			writeDerivationFooter(tw, uniform, "\t\t")
 			section = m.Dimension
+			uniform = uniformDerivation(env.Metrics, section)
 			fmt.Fprintf(tw, "\n%s\t\t\n", strings.ToUpper(section))
 		}
 		label := m.Name
 		if m.Key != "" {
 			label = m.Key
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", label, formatValue(m.Value, m.Unit), m.Derivation)
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", label, formatValue(m.Value, m.Unit), derivationCell(m, uniform))
 	}
+	writeDerivationFooter(tw, uniform, "\t\t")
 	return renderTail(w, tw, env)
+}
+
+// uniformDerivation returns the one derivation every row of a dimension
+// carries, or "" when the dimension mixes them.
+//
+// A column printing the same word on all 60 rows is a column that says
+// nothing — it is the defect this reports. Where the field genuinely varies it
+// is the whole point of the metric, and stays a column.
+func uniformDerivation(metrics []Metric, dimension string) string {
+	seen := ""
+	for _, m := range metrics {
+		if m.Dimension != dimension {
+			continue
+		}
+		if seen == "" {
+			seen = m.Derivation
+		} else if seen != m.Derivation {
+			return ""
+		}
+	}
+	return seen
+}
+
+// derivationCell prints a row's derivation only where its block mixes them.
+// The design constraint that every metric carries a rendered Derivation is
+// still met: a uniform block renders it once as a footer instead of 60 times
+// as a column, and --json keeps the per-row tag either way.
+func derivationCell(m Metric, uniform string) string {
+	if uniform != "" {
+		return ""
+	}
+	return m.Derivation
+}
+
+// writeDerivationFooter closes a uniform block with the one line the column
+// collapsed into. pad carries the trailing empty cells the table needs.
+func writeDerivationFooter(tw io.Writer, uniform, pad string) {
+	if uniform != "" {
+		fmt.Fprintf(tw, "all rows %s%s\n", uniform, pad)
+	}
 }
 
 // renderHeader is the two identifying lines every table starts with.
@@ -129,11 +172,13 @@ func renderTail(w io.Writer, tw *tabwriter.Writer, env Envelope) error {
 // writeCorpus prints the keyless corpus-wide rows as a three-column block.
 func writeCorpus(tw io.Writer, env Envelope) {
 	fmt.Fprint(tw, "\nCORPUS\t\t\n")
+	uniform := uniformDerivation(env.Metrics, "corpus")
 	for _, m := range env.Metrics {
 		if m.Dimension == "corpus" {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", m.Name, formatValue(m.Value, m.Unit), m.Derivation)
+			fmt.Fprintf(tw, "%s\t%s\t%s\n", m.Name, formatValue(m.Value, m.Unit), derivationCell(m, uniform))
 		}
 	}
+	writeDerivationFooter(tw, uniform, "\t\t")
 }
 
 // day trims an RFC3339 timestamp to its date. RFC3339 sorts lexically, so no

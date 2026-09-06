@@ -74,28 +74,43 @@ tare tools — /Users/you/.claude/projects
 2026-08-06 .. 2026-09-06
 
 CORPUS
-tool_use_blocks              14,583      measured
-tool_result_blocks           14,582      measured
-unmatched_results            0           measured
-unanswered_uses              1           measured
-distinct_tools               63          measured
-calls                        14,582      measured
-context_bytes                36,127,457  measured
-image_bytes                  2,348,764   measured
-produced_bytes               40,497,744  measured
-errors                       367         measured
+tool_use_blocks              14,819
+tool_result_blocks           14,818
+unmatched_results            0
+unanswered_uses              1
+distinct_tools               63
+calls                        14,818
+context_bytes                36.5 MB
+image_bytes                  2.3 MB
+image_results                15
+produced_bytes               40.9 MB
+errors                       369
+externalised_results         39
+externalised_produced_bytes  2.1 MB
+externalised_context_bytes   85.8 kB
+all rows measured
 
-TOOL                                           CALLS  CONTEXT     IMAGES     PRODUCED    ERRORS
-Bash                                           8,618  17,018,358  0          19,039,881  253
-Read                                           1,443  12,813,216  2,348,764  15,161,980  15
-mcp__plugin_sre_grafana-prod__query_loki_logs  644    1,857,636   0          1,857,636   26
-Grep                                           502    1,045,774   0          1,045,774   4
-WebSearch                                      282    792,390     0          792,390     4
+TOOL                                                        CALLS  CONTEXT   IMAGES  PRODUCED  ERRORS  SHARE
+Bash                                                        8,774  17.3 MB   0 B     19.3 MB   254     47.3%  ***
+Read                                                        1,446  12.9 MB   2.3 MB  15.2 MB   15      35.3%  ***
+mcp__plugin_sre_grafana-prod__query_loki_logs               644    1.9 MB    0 B     1.9 MB    26      5.1%   *
+Grep                                                        502    1.0 MB    0 B     1.0 MB    4       2.9%
+WebSearch                                                   296    829.7 kB  0 B     829.7 kB  4       2.3%
 ```
 
 Then `tare attribute` for the same volume rolled up by skill, plugin, agent and
-MCP server, and `tare report` for all of it in one artifact. Every row carries
-the `measured` / `estimated` tag you see in the right-hand column.
+MCP server, and `tare report` for all of it in one artifact.
+
+The `SHARE` column is each tool's share of the corpus total for that table, and
+the marks grade it: `*` ≥5%, `**` ≥20%, `***` ≥35%, `!!` ≥50%. The grade is a
+rendering of the share, not a separate measurement — it is not in `--json`, and
+you can recompute it yourself from `context_bytes`.
+
+Every row still carries a `measured` / `estimated` derivation, but the table
+prints it as a column only where a block actually mixes the two. Where every
+row agrees it collapses to the single footer line you see above — a column that
+repeats one word on all sixty rows says nothing. `--json` tags every row either
+way.
 
 That output is one live run. `~/.claude/projects` grows while you read it, so
 your own numbers will differ — see [Reproducibility](#reproducibility).
@@ -103,6 +118,8 @@ your own numbers will differ — see [Reproducibility](#reproducibility).
 ## Commands
 
 Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
+`tare --help`, `tare -h` and `tare help` all print this list to stdout and exit
+0, so `tare --help | head` works.
 
 | Command | What it answers | Own flags |
 |---|---|---|
@@ -172,12 +189,20 @@ and not only by eye:
 }
 ```
 
+`--json` is untouched by any of the table formatting above: `bytes` is the exact
+integer `253603993`, never the `253.6 MB` the table shows. Rendering is a table
+concern and the envelope is the contract.
+
 ## Reproducibility
 
 Two runs over the same bytes produce the same artifact, down to the last bit of
 every float. The Markdown artifact differs in its `generated` row and nowhere
 else; the JSON envelope carries no timestamp at all, so it is byte-identical.
 That is the point of the tool: a skeptic has to be able to re-run it.
+
+Byte figures in the tables are **SI** — divided by 1000 and labelled `kB`, `MB`,
+`GB`. `254.4 MB`, never the IEC `242.6 MiB`; the two are never mixed. `--json`
+carries the exact integer, so a script never has to parse a rounded label.
 
 `~/.claude/projects` is a *live* directory — Claude Code appends to it while
 `tare` reads it — so two runs minutes apart legitimately differ. Point `--dir`
@@ -235,37 +260,39 @@ dependencies or it argues against itself.
 
 ## A run on the author's corpus
 
-One `tare report` over a frozen snapshot, 2026-09-05. A live corpus moves, so
+One `tare report` over a frozen snapshot, 2026-09-06. A live corpus moves, so
 these are one run, not a constant.
 
-**Corpus** — 389 files, 250,735,113 bytes, 2026-08-06 to 2026-09-06, written by
-28 Claude Code versions. 74,172 events across 21 event types, 0 parse errors.
+**Corpus** — 396 files, 257.8 MB, 2026-08-06 to 2026-09-06, written by 28 Claude
+Code versions. 76,395 events across 21 event types, 0 parse errors.
 
-**Tools** — 63 distinct tools, 14,436 calls. 35,858,323 bytes of context sent
-into them, 40,228,610 bytes produced back. 14,437 `tool_use` blocks against
-14,436 `tool_result`: 0 unmatched, 1 call never answered.
+**Tools** — 63 distinct tools, 14,756 calls. 36.4 MB of context sent into them,
+40.8 MB produced back. 14,756 `tool_use` blocks against 14,756 `tool_result`: 0
+unmatched. Two tools carry the corpus: `Bash` at 47.2% of all context bytes and
+`Read` at 35.4%, both graded `***`.
 
-**Re-billing** — 58,478,953 fresh tokens were re-billed as 1,636,600,446 cached
-reads: a **27.99x multiplier**. Prior context charged again is where the money
+**Re-billing** — 59,351,143 fresh tokens were re-billed as 1,668,436,665 cached
+reads: a **28× multiplier**. Prior context charged again is where the money
 goes, and it is measured, not modelled.
 
-**Attachments** — 60,464,564 bytes across 35 attachment types, **24.1% of the
-corpus**. That is the tare: weight that is not payload.
+**Attachments** — 64.0 MB across 35 attachment types, **24.8% of the corpus**.
+That is the tare: weight that is not payload.
 
-**Corruption** — 2.52% of calls returned an error, 1.48% returned nothing at
-all, 0.055% carried a truncation marker.
+**Corruption** — 2.5% of calls returned an error, 1.5% returned nothing at all,
+0.1% carried a truncation marker.
 
-**What the numbers cannot cover** — 56.4% of assistant responses (15,322 of
-27,162) repeat a `message.id` already seen and are deduplicated. Only 59 of 136
-sessions (43.4%) carry a billing record. Claude Code's own cache counted 144
-sessions against 136 transcripts still on disk: 8 gone.
+**What the numbers cannot cover** — 56.4% of assistant responses (15,664 of
+27,788) repeat a `message.id` already seen and are deduplicated. Only 63 of 141
+sessions (44.7%) carry a billing record. Claude Code's own cache counted 144
+sessions against 141 transcripts still on disk: 3 gone.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | `tare: no command given` | A subcommand is required. `tare` with no arguments prints the list. |
-| `tare: unknown command "--json"` | Flags go after the subcommand: `tare scan --json`, not `tare --json scan`. |
+| `tare: flags go after the command` | Exactly that: `tare scan --json`, not `tare --json scan`. |
+| `tare: unknown command "tool"` | Not a subcommand. `tare --help` prints the five that are. |
 | `tare: flag provided but not defined: -boost-deep` | `--boost-deep` is registered on `corruption` only, so that it cannot silently do nothing elsewhere. |
 | `files 0` and an empty date range | `--dir` is not a transcript root. It should contain per-project subdirectories of `*.jsonl`. |
 | Two runs disagree | The corpus is live. Copy it and point `--dir` at the copy — see [Reproducibility](#reproducibility). |

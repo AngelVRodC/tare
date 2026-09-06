@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -47,28 +48,10 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 	var useBlocks, resultBlocks, unmatched int64
 	var extResults, extProduced, extContext int64
 	var imageBlocks int64
-	var warnings []string
-	var from, to string
-
-	stat := func(m map[string]*toolStat, key string) *toolStat {
-		s := m[key]
-		if s == nil {
-			s = &toolStat{}
-			m[key] = s
-		}
-		return s
-	}
+	b := newBuilder(dir, version, "tools")
 
 	scanStats, err := transcript.Scan(dir, func(ev *transcript.Event) {
-		if ts := ev.Timestamp; ts != "" {
-			if from == "" || ts < from {
-				from = ts
-			}
-			if to == "" || ts > to {
-				to = ts
-			}
-		}
-
+		b.see(ev)
 		uses, results := ev.Blocks()
 		for _, u := range uses {
 			useBlocks++
@@ -84,9 +67,8 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 		// say so rather than double-count it.
 		persisted := ev.Persisted()
 		if persisted != nil && len(results) != 1 {
-			warnings = append(warnings, fmt.Sprintf(
-				"%s: persisted output %s on an event with %d tool_result blocks — produced bytes not attributed",
-				ev.File, persisted.Path, len(results)))
+			b.warn("%s: persisted output %s on an event with %d tool_result blocks — produced bytes not attributed",
+				ev.File, persisted.Path, len(results))
 			persisted = nil
 		}
 
@@ -95,8 +77,7 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 			name, ok := names[r.ToolUseID]
 			if !ok {
 				unmatched++
-				warnings = append(warnings, fmt.Sprintf(
-					"%s: tool_result %s has no matching tool_use", ev.File, r.ToolUseID))
+				b.warn("%s: tool_result %s has no matching tool_use", ev.File, r.ToolUseID)
 				continue
 			}
 			answered[r.ToolUseID] = true
@@ -112,41 +93,25 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 				extResults++
 				extProduced += persisted.Size
 				extContext += r.ContextBytes
-				if onDisk, err := persisted.OnDisk(); err != nil {
-					// A transcript outlives its side file: warn, do not fail.
-					warnings = append(warnings, fmt.Sprintf(
-						"persisted output missing: %s (%v)", persisted.Path, err))
-				} else if onDisk != persisted.Size {
-					// Baseline is 39 of 39 exact — disagreement is a defect.
-					warnings = append(warnings, fmt.Sprintf(
-						"persisted output size mismatch: %s reports %d bytes, on disk %d",
-						persisted.Path, persisted.Size, onDisk))
+				// The measured baseline is 39 of 39 byte-exact, so a size that
+				// disagrees is a real defect. A side file that is simply gone
+				// is only a warning: a transcript outlives its side file.
+				if fi, err := os.Stat(persisted.Path); err != nil {
+					b.warn("persisted output missing: %s (%v)", persisted.Path, err)
+				} else if fi.Size() != persisted.Size {
+					b.warn("persisted output size mismatch: %s reports %d bytes, on disk %d",
+						persisted.Path, persisted.Size, fi.Size())
 				}
 			}
 
-			stat(tools, name).add(r.ContextBytes, r.ImageBytes, produced, r.IsError)
+			bucket(tools, name).add(r.ContextBytes, r.ImageBytes, produced, r.IsError)
 			if server, _, isMCP := splitMCP(name); isMCP {
-				stat(servers, server).add(r.ContextBytes, r.ImageBytes, produced, r.IsError)
+				bucket(servers, server).add(r.ContextBytes, r.ImageBytes, produced, r.IsError)
 			}
 		}
 	})
 	if err != nil {
 		return Envelope{}, err
-	}
-
-	env := Envelope{
-		Tool:    "tare",
-		Version: version,
-		Command: "tools",
-		Corpus: Corpus{
-			Dir:   dir,
-			Files: scanStats.Files,
-			Bytes: scanStats.Bytes,
-			From:  day(from),
-			To:    day(to),
-		},
-		Metrics:  []Metric{},
-		Warnings: []string{},
 	}
 
 	var totals toolStat
@@ -161,9 +126,7 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 	// in the same sense as an unmatched result — count it apart.
 	unanswered := int64(len(names) - len(answered))
 
-	add := func(name string, value any, unit string) {
-		env.Metrics = append(env.Metrics, MeasuredMetric(name, "corpus", "", value, unit))
-	}
+	add := b.add
 	add("tool_use_blocks", useBlocks, "blocks")
 	add("tool_result_blocks", resultBlocks, "blocks")
 	add("unmatched_results", unmatched, "blocks")
@@ -179,15 +142,9 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 	add("externalised_produced_bytes", extProduced, "bytes")
 	add("externalised_context_bytes", extContext, "bytes")
 
-	env.Metrics = append(env.Metrics, statMetrics("tool", tools)...)
-	env.Metrics = append(env.Metrics, statMetrics("mcp_server", servers)...)
-
-	env.Warnings = append(env.Warnings, warnings...)
-	if scanStats.ParseErrors > 0 {
-		env.Warnings = append(env.Warnings,
-			fmt.Sprintf("%d lines failed to decode", scanStats.ParseErrors))
-	}
-	return env, nil
+	b.rows(statMetrics("tool", tools)...)
+	b.rows(statMetrics("mcp_server", servers)...)
+	return b.done(scanStats), nil
 }
 
 // splitMCP splits an `mcp__<server>__<tool>` name into its server and tool.
@@ -231,16 +188,9 @@ func statMetrics(dimension string, stats map[string]*toolStat) []Metric {
 // RenderTools prints the envelope as a table. Like RenderScan it reads only
 // the envelope, so the table and `--json` can never report different numbers.
 func RenderTools(w io.Writer, env Envelope) error {
-	fmt.Fprintf(w, "tare %s — %s\n", env.Command, env.Corpus.Dir)
-	fmt.Fprintf(w, "%s .. %s\n", env.Corpus.From, env.Corpus.To)
-
+	renderHeader(w, env)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprint(tw, "\nCORPUS\t\t\n")
-	for _, m := range env.Metrics {
-		if m.Dimension == "corpus" {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", m.Name, formatValue(m.Value), m.Derivation)
-		}
-	}
+	writeCorpus(tw, env)
 	for _, dim := range []string{"tool", "mcp_server"} {
 		rows := groupRows(env.Metrics, dim)
 		if len(rows) == 0 {
@@ -256,16 +206,7 @@ func RenderTools(w io.Writer, env Envelope) error {
 				formatValue(r.values["errors"]))
 		}
 	}
-	if err := tw.Flush(); err != nil {
-		return err
-	}
-	for _, warn := range env.Warnings {
-		fmt.Fprintf(w, "\nwarning: %s", warn)
-	}
-	if len(env.Warnings) > 0 {
-		fmt.Fprintln(w)
-	}
-	return nil
+	return renderTail(w, tw, env)
 }
 
 type row struct {

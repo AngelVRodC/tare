@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/AngelVRodC/tare/internal/transcript"
 )
 
 // Derivation values. Every metric carries one; nothing is emitted untagged.
@@ -99,4 +101,69 @@ func WriteJSON(w io.Writer, env Envelope) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(env)
+}
+
+// builder accumulates one command's envelope.
+//
+// Every command builds the same header, widens the same corpus date range as
+// it streams, and reports parse errors the same way. This is that, once — four
+// copies of it drifted apart the moment one of them gained a field.
+type builder struct {
+	env      Envelope
+	from, to string
+}
+
+func newBuilder(dir, version, command string) *builder {
+	return &builder{env: Envelope{
+		Tool:     "tare",
+		Version:  version,
+		Command:  command,
+		Corpus:   Corpus{Dir: dir},
+		Metrics:  []Metric{},
+		Warnings: []string{},
+	}}
+}
+
+// see widens the corpus date range to include one event. RFC3339 sorts
+// lexically, so no time parsing happens anywhere in this program.
+func (b *builder) see(ev *transcript.Event) {
+	ts := ev.Timestamp
+	if ts == "" {
+		return
+	}
+	if b.from == "" || ts < b.from {
+		b.from = ts
+	}
+	if b.to == "" || ts > b.to {
+		b.to = ts
+	}
+}
+
+// add appends one keyless corpus-wide measured row.
+func (b *builder) add(name string, value any, unit string) {
+	b.env.Metrics = append(b.env.Metrics, MeasuredMetric(name, "corpus", "", value, unit))
+}
+
+// rows appends already-built rows, keeping the order they were emitted in.
+func (b *builder) rows(m ...Metric) {
+	b.env.Metrics = append(b.env.Metrics, m...)
+}
+
+// warn records what the command could not compute. Nothing is ever omitted
+// silently; an absent number is a warning, not a zero.
+func (b *builder) warn(format string, args ...any) {
+	b.env.Warnings = append(b.env.Warnings, fmt.Sprintf(format, args...))
+}
+
+// done seals the envelope with what the scan measured. Parse errors are
+// appended here, which is why they are always the last warning.
+func (b *builder) done(stats transcript.ScanStats) Envelope {
+	b.env.Corpus.Files = stats.Files
+	b.env.Corpus.Bytes = stats.Bytes
+	b.env.Corpus.From = day(b.from)
+	b.env.Corpus.To = day(b.to)
+	if stats.ParseErrors > 0 {
+		b.warn("%d lines failed to decode", stats.ParseErrors)
+	}
+	return b.env
 }

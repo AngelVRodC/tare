@@ -26,11 +26,6 @@ type Report struct {
 	Envelope   Envelope
 }
 
-// sections returns the four in the order they are reported.
-func (r Report) sections() []Envelope {
-	return []Envelope{r.Scan, r.Tools, r.Attribute, r.Corruption}
-}
-
 // BuildReport runs every command and merges the results.
 //
 // `--boost-deep` is deliberately not offered here: it shells out to sqlite3
@@ -54,7 +49,7 @@ func BuildReport(dir, version string) (Report, error) {
 	if r.Corruption, err = CorruptionEnvelope(dir, version, false); err != nil {
 		return Report{}, err
 	}
-	r.Envelope = merge(dir, version, r.sections())
+	r.Envelope = merge(dir, version, []Envelope{r.Scan, r.Tools, r.Attribute, r.Corruption})
 	return r, nil
 }
 

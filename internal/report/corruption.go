@@ -37,18 +37,10 @@ func CorruptionEnvelope(dir, version string, deep bool) (Envelope, error) {
 	markers := map[string]int64{}
 
 	var results, unmatched int64
-	var from, to string
+	b := newBuilder(dir, version, "corruption")
 
 	scanStats, err := transcript.Scan(dir, func(ev *transcript.Event) {
-		if ts := ev.Timestamp; ts != "" {
-			if from == "" || ts < from {
-				from = ts
-			}
-			if to == "" || ts > to {
-				to = ts
-			}
-		}
-
+		b.see(ev)
 		uses, res := ev.Blocks()
 		for _, u := range uses {
 			names[u.ID] = u.Name
@@ -86,21 +78,6 @@ func CorruptionEnvelope(dir, version string, deep bool) (Envelope, error) {
 		return Envelope{}, err
 	}
 
-	env := Envelope{
-		Tool:    "tare",
-		Version: version,
-		Command: "corruption",
-		Corpus: Corpus{
-			Dir:   dir,
-			Files: scanStats.Files,
-			Bytes: scanStats.Bytes,
-			From:  day(from),
-			To:    day(to),
-		},
-		Metrics:  []Metric{},
-		Warnings: []string{},
-	}
-
 	var totals corruptStat
 	for _, s := range tools {
 		totals.Calls += s.Calls
@@ -109,9 +86,7 @@ func CorruptionEnvelope(dir, version string, deep bool) (Envelope, error) {
 		totals.Truncated += s.Truncated
 	}
 
-	add := func(name string, value any, unit string) {
-		env.Metrics = append(env.Metrics, MeasuredMetric(name, "corpus", "", value, unit))
-	}
+	add := b.add
 	add("calls", totals.Calls, "calls")
 	add("distinct_tools", int64(len(tools)), "tools")
 	add("errors", totals.Errors, "calls")
@@ -123,30 +98,26 @@ func CorruptionEnvelope(dir, version string, deep bool) (Envelope, error) {
 	add("truncation_marker_kinds", int64(len(markers)), "markers")
 	add("unmatched_results", unmatched, "blocks")
 
-	env.Metrics = append(env.Metrics, corruptMetrics(tools)...)
-	for _, m := range slices.SortedFunc(maps.Keys(markers), func(a, b string) int {
-		return cmp.Or(cmp.Compare(markers[b], markers[a]), strings.Compare(a, b))
+	b.rows(corruptMetrics(tools)...)
+	for _, m := range slices.SortedFunc(maps.Keys(markers), func(a, c string) int {
+		return cmp.Or(cmp.Compare(markers[c], markers[a]), strings.Compare(a, c))
 	}) {
-		env.Metrics = append(env.Metrics,
-			MeasuredMetric("truncated_results", "truncation_marker", m, markers[m], "calls"))
+		b.rows(MeasuredMetric("truncated_results", "truncation_marker", m, markers[m], "calls"))
 	}
 
 	boostRows, boostWarnings := boostSection(names, deep)
-	env.Metrics = append(env.Metrics, boostRows...)
+	b.rows(boostRows...)
 
 	if totals.Truncated > 0 {
-		env.Warnings = append(env.Warnings, fmt.Sprintf(
-			"%d results carry a truncation marker; Claude Code externalises rather than truncates, "+
-				"so the cut came from the tool. Markers are literal substring matches, "+
-				"so a result quoting one is a false positive — check the named tools",
-			totals.Truncated))
+		b.warn("%d results carry a truncation marker; Claude Code externalises rather than truncates, "+
+			"so the cut came from the tool. Markers are literal substring matches, "+
+			"so a result quoting one is a false positive — check the named tools",
+			totals.Truncated)
 	}
-	env.Warnings = append(env.Warnings, boostWarnings...)
-	if scanStats.ParseErrors > 0 {
-		env.Warnings = append(env.Warnings,
-			fmt.Sprintf("%d lines failed to decode", scanStats.ParseErrors))
+	for _, w := range boostWarnings {
+		b.warn("%s", w)
 	}
-	return env, nil
+	return b.done(scanStats), nil
 }
 
 // corruptMetrics emits one row group per tool, noisiest first: errors, then
@@ -194,9 +165,7 @@ func writeScalars(tw io.Writer, env Envelope, dimension string) {
 // RenderCorruption prints the envelope as a table. Like every other renderer
 // it reads only the envelope, so the table and `--json` cannot disagree.
 func RenderCorruption(w io.Writer, env Envelope) error {
-	fmt.Fprintf(w, "tare %s — %s\n", env.Command, env.Corpus.Dir)
-	fmt.Fprintf(w, "%s .. %s\n", env.Corpus.From, env.Corpus.To)
-
+	renderHeader(w, env)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	writeScalars(tw, env, "corpus")
 	writeScalars(tw, env, "boost")
@@ -240,14 +209,5 @@ func RenderCorruption(w io.Writer, env Envelope) error {
 		}
 		writeWithheld(tw, withheld, "boost_filter")
 	}
-	if err := tw.Flush(); err != nil {
-		return err
-	}
-	for _, warn := range env.Warnings {
-		fmt.Fprintf(w, "\nwarning: %s", warn)
-	}
-	if len(env.Warnings) > 0 {
-		fmt.Fprintln(w)
-	}
-	return nil
+	return renderTail(w, tw, env)
 }

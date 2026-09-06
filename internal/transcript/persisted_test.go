@@ -89,12 +89,14 @@ func TestPersistedNotNull(t *testing.T) {
 		t.Errorf("ContextBytes = %d, want the placeholder length %d", result.ContextBytes, len(placeholder))
 	}
 
-	onDisk, err := found.OnDisk()
+	// The measured baseline is 39 of 39 byte-exact, so persistedOutputSize
+	// agreeing with the side file is part of the contract, not a coincidence.
+	fi, err := os.Stat(found.Path)
 	if err != nil {
-		t.Fatalf("OnDisk: %v", err)
+		t.Fatalf("stat side file: %v", err)
 	}
-	if onDisk != found.Size {
-		t.Errorf("on-disk size %d disagrees with persistedOutputSize %d", onDisk, found.Size)
+	if fi.Size() != found.Size {
+		t.Errorf("on-disk size %d disagrees with persistedOutputSize %d", fi.Size(), found.Size)
 	}
 }
 
@@ -177,14 +179,5 @@ func TestByteKinds(t *testing.T) {
 	}
 	if inline.produced != inline.context {
 		t.Errorf("inline produced (%d) and context (%d) must agree", inline.produced, inline.context)
-	}
-}
-
-// TestOnDiskMissing pins the softer half of the contract: a side file that is
-// gone is reportable, not fatal — a transcript outlives its side file.
-func TestOnDiskMissing(t *testing.T) {
-	p := Persisted{Path: filepath.Join(t.TempDir(), "gone.txt"), Size: 10}
-	if _, err := p.OnDisk(); err == nil {
-		t.Error("OnDisk accepted a missing side file")
 	}
 }

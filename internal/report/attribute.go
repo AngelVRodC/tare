@@ -92,17 +92,10 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 	attachByKey := map[dimKey]*attachStat{}
 
 	var naiveResponses int64
-	var from, to string
+	bld := newBuilder(dir, version, "attribute")
 
 	scanStats, err := transcript.Scan(dir, func(ev *transcript.Event) {
-		if ts := ev.Timestamp; ts != "" {
-			if from == "" || ts < from {
-				from = ts
-			}
-			if to == "" || ts > to {
-				to = ts
-			}
-		}
+		bld.see(ev)
 		if ev.SessionID != "" {
 			sessions[ev.SessionID] = true
 		}
@@ -154,21 +147,6 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 		return Envelope{}, err
 	}
 
-	env := Envelope{
-		Tool:    "tare",
-		Version: version,
-		Command: "attribute",
-		Corpus: Corpus{
-			Dir:   dir,
-			Files: scanStats.Files,
-			Bytes: scanStats.Bytes,
-			From:  day(from),
-			To:    day(to),
-		},
-		Metrics:  []Metric{},
-		Warnings: []string{},
-	}
-
 	// Coverage first: a dollar figure allocated over a session whose transcript
 	// holds a fraction of what was billed is a fraction of the truth, and the
 	// reader has to be told so before being shown the money.
@@ -185,9 +163,7 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 		}
 	}
 
-	add := func(name string, value any, unit string) {
-		env.Metrics = append(env.Metrics, MeasuredMetric(name, "corpus", "", value, unit))
-	}
+	add := bld.add
 	add("responses_naive", naiveResponses, "responses")
 	add("responses_distinct", int64(usage.Distinct), "responses")
 	add("responses_duplicate", int64(usage.Duplicates), "responses")
@@ -205,42 +181,36 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 	add("attachment_bytes", attachTotal.Bytes, "bytes")
 	add("attachment_share_percent", percent(attachTotal.Bytes, scanStats.Bytes), "percent")
 	add("attachment_types", int64(len(attachByType)), "types")
-	env.Metrics = append(env.Metrics,
+	bld.rows(
 		EstimatedMetric("allocated_cost_usd", "corpus", "", allocated, "usd", AllocationMethod),
 		EstimatedMetric("unallocated_cost_usd", "corpus", "", billed-allocated, "usd", AllocationMethod))
 
 	for _, d := range attributionDims {
-		env.Metrics = append(env.Metrics, rebillMetrics(d.name, byDim, costByDim)...)
+		bld.rows(rebillMetrics(d.name, byDim, costByDim)...)
 	}
-	env.Metrics = append(env.Metrics, rebillMetrics(sessionDim, byDim, costByDim)...)
-	env.Metrics = append(env.Metrics, availabilityMetrics(byDim, costStates)...)
-	env.Metrics = append(env.Metrics, coverageRows...)
-	env.Metrics = append(env.Metrics, attachMetrics("attachment_type", attachByType)...)
+	bld.rows(rebillMetrics(sessionDim, byDim, costByDim)...)
+	bld.rows(availabilityMetrics(byDim, costStates)...)
+	bld.rows(coverageRows...)
+	bld.rows(attachMetrics("attachment_type", attachByType)...)
 	for _, dim := range []string{
 		transcript.DimSkill, transcript.DimMcpServer, transcript.DimMcpTool,
 		transcript.DimAgent, transcript.DimHookName,
 	} {
-		env.Metrics = append(env.Metrics, attachKeyMetrics(dim, attachByKey)...)
+		bld.rows(attachKeyMetrics(dim, attachByKey)...)
 	}
 
 	if usage.Duplicates > 0 {
-		env.Warnings = append(env.Warnings, fmt.Sprintf(
-			"%d of %d assistant responses repeat a message.id already seen — deduplicated, not summed",
-			usage.Duplicates, naiveResponses))
+		bld.warn("%d of %d assistant responses repeat a message.id already seen — deduplicated, not summed",
+			usage.Duplicates, naiveResponses)
 	}
 	if missing := len(sessions) - len(costStates); missing > 0 {
-		env.Warnings = append(env.Warnings, fmt.Sprintf(
-			"%d of %d sessions carry no cost-state event: dollars are unavailable for them, not zero",
-			missing, len(sessions)))
+		bld.warn("%d of %d sessions carry no cost-state event: dollars are unavailable for them, not zero",
+			missing, len(sessions))
 	}
 	if absent != "" {
-		env.Warnings = append(env.Warnings, absent)
+		bld.warn("%s", absent)
 	}
-	if scanStats.ParseErrors > 0 {
-		env.Warnings = append(env.Warnings,
-			fmt.Sprintf("%d lines failed to decode", scanStats.ParseErrors))
-	}
-	return env, nil
+	return bld.done(scanStats), nil
 }
 
 // allocateDims spreads each measured session-model bill across the dimension
@@ -431,16 +401,9 @@ const tableRows = 15
 // RenderAttribute prints the envelope as a table. Like the other renderers it
 // reads only the envelope, so the table and `--json` cannot disagree.
 func RenderAttribute(w io.Writer, env Envelope) error {
-	fmt.Fprintf(w, "tare %s — %s\n", env.Command, env.Corpus.Dir)
-	fmt.Fprintf(w, "%s .. %s\n", env.Corpus.From, env.Corpus.To)
-
+	renderHeader(w, env)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprint(tw, "\nCORPUS\t\t\n")
-	for _, m := range env.Metrics {
-		if m.Dimension == "corpus" {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", m.Name, formatValue(m.Value), m.Derivation)
-		}
-	}
+	writeCorpus(tw, env)
 
 	for _, d := range attributionDims {
 		writeRebillTable(tw, env, d.name)
@@ -464,16 +427,7 @@ func RenderAttribute(w io.Writer, env Envelope) error {
 		}
 		writeWithheld(tw, withheld, dim)
 	}
-	if err := tw.Flush(); err != nil {
-		return err
-	}
-	for _, warn := range env.Warnings {
-		fmt.Fprintf(w, "\nwarning: %s", warn)
-	}
-	if len(env.Warnings) > 0 {
-		fmt.Fprintln(w)
-	}
-	return nil
+	return renderTail(w, tw, env)
 }
 
 func writeRebillTable(tw io.Writer, env Envelope, dimension string) {

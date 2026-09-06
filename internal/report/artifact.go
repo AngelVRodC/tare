@@ -79,7 +79,13 @@ func merge(dir, version string, envs []Envelope) Envelope {
 	for _, env := range envs {
 		for _, m := range env.Metrics {
 			id := metricID{m.Name, m.Dimension, m.Key}
-			value := formatValue(m.Value)
+			// Not formatValue: that is the display formatter, and it is about
+			// to become lossy per unit. This comparison decides whether a real
+			// disagreement between two commands is reported, so it needs a
+			// lossless key. %v also normalises int against int64 — tools.go
+			// emits distinct_tools as int, corruption.go as int64, and a raw
+			// `any` comparison would fire a false disagreement on that pair.
+			value := fmt.Sprintf("%v", m.Value)
 			if prev, dup := seen[id]; dup {
 				if prev.value != value {
 					out.Warnings = append(out.Warnings, fmt.Sprintf(

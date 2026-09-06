@@ -177,11 +177,11 @@ func RenderCorruption(w io.Writer, env Envelope) error {
 		shown, withheld := truncate(rows)
 		for _, r := range shown {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
-				formatValue(r.values["calls"]),
-				formatValue(r.values["errors"]),
-				formatValue(r.values["error_rate_percent"]),
-				formatValue(r.values["empty_results"]),
-				formatValue(r.values["truncated_results"]))
+				r.cell("calls"),
+				r.cell("errors"),
+				r.cell("error_rate_percent"),
+				r.cell("empty_results"),
+				r.cell("truncated_results"))
 		}
 		writeWithheld(tw, withheld, "tool")
 	}
@@ -189,7 +189,7 @@ func RenderCorruption(w io.Writer, env Envelope) error {
 	if rows := groupRows(env.Metrics, "truncation_marker"); len(rows) > 0 {
 		fmt.Fprint(tw, "\nTRUNCATION_MARKER\tRESULTS\t\t\t\t\n")
 		for _, r := range rows {
-			fmt.Fprintf(tw, "%s\t%s\t\t\t\t\n", r.key, formatValue(r.values["truncated_results"]))
+			fmt.Fprintf(tw, "%s\t%s\t\t\t\t\n", r.key, r.cell("truncated_results"))
 		}
 	}
 
@@ -200,12 +200,12 @@ func RenderCorruption(w io.Writer, env Envelope) error {
 		shown, withheld := truncate(rows)
 		for _, r := range shown {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
-				formatValue(r.values["event_count"]),
-				formatValue(r.values["tokens_before"]),
-				formatValue(r.values["tokens_after"]),
-				formatValue(r.values["saved_tokens"]),
-				formatValue(r.values["saved_rate_percent"]),
-				formatValue(r.values["retrieve_count"]))
+				r.cell("event_count"),
+				r.cell("tokens_before"),
+				r.cell("tokens_after"),
+				r.cell("saved_tokens"),
+				r.cell("saved_rate_percent"),
+				r.cell("retrieve_count"))
 		}
 		writeWithheld(tw, withheld, "boost_filter")
 	}

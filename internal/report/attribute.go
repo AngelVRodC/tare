@@ -422,8 +422,8 @@ func RenderAttribute(w io.Writer, env Envelope) error {
 		shown, withheld := truncate(rows)
 		for _, r := range shown {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t\t\t\n", r.key,
-				formatValue(r.values["attachment_events"]),
-				formatValue(r.values["attachment_bytes"]))
+				r.cell("attachment_events"),
+				r.cell("attachment_bytes"))
 		}
 		writeWithheld(tw, withheld, dim)
 	}
@@ -441,14 +441,14 @@ func writeRebillTable(tw io.Writer, env Envelope, dimension string) {
 		// A session with no cost-state has no cost_usd row at all. It says
 		// "unavailable" and never "0.00" — the difference is the finding.
 		usd := "unavailable"
-		if v, ok := r.values["cost_usd"]; ok {
-			usd = formatValue(v)
+		if _, ok := r.values["cost_usd"]; ok {
+			usd = r.cell("cost_usd")
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
-			formatValue(r.values["responses"]),
-			formatValue(r.values["fresh_tokens"]),
-			formatValue(r.values["rebilled_tokens"]),
-			formatValue(r.values["rebill_multiplier"]),
+			r.cell("responses"),
+			r.cell("fresh_tokens"),
+			r.cell("rebilled_tokens"),
+			r.cell("rebill_multiplier"),
 			usd)
 	}
 	writeWithheld(tw, withheld, dimension)

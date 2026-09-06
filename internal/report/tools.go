@@ -199,11 +199,11 @@ func RenderTools(w io.Writer, env Envelope) error {
 		fmt.Fprintf(tw, "\n%s\tCALLS\tCONTEXT\tIMAGES\tPRODUCED\tERRORS\n", strings.ToUpper(dim))
 		for _, r := range rows {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
-				formatValue(r.values["calls"]),
-				formatValue(r.values["context_bytes"]),
-				formatValue(r.values["image_bytes"]),
-				formatValue(r.values["produced_bytes"]),
-				formatValue(r.values["errors"]))
+				r.cell("calls"),
+				r.cell("context_bytes"),
+				r.cell("image_bytes"),
+				r.cell("produced_bytes"),
+				r.cell("errors"))
 		}
 	}
 	return renderTail(w, tw, env)
@@ -211,7 +211,15 @@ func RenderTools(w io.Writer, env Envelope) error {
 
 type row struct {
 	key    string
-	values map[string]any
+	values map[string]Metric
+}
+
+// cell formats one of a row's metrics by what that metric measures. A name the
+// row does not carry yields the zero Metric, whose nil Value formats exactly as
+// a missing map key did before.
+func (r row) cell(name string) string {
+	m := r.values[name]
+	return formatValue(m.Value)
 }
 
 // groupRows folds the flat metric rows of one dimension back into table rows,
@@ -227,9 +235,9 @@ func groupRows(metrics []Metric, dimension string) []row {
 		if !ok {
 			i = len(rows)
 			index[m.Key] = i
-			rows = append(rows, row{key: m.Key, values: map[string]any{}})
+			rows = append(rows, row{key: m.Key, values: map[string]Metric{}})
 		}
-		rows[i].values[m.Name] = m.Value
+		rows[i].values[m.Name] = m
 	}
 	return rows
 }

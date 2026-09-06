@@ -1,6 +1,7 @@
 package report
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -140,5 +141,43 @@ func TestBoostDBPath(t *testing.T) {
 	}
 	if _, err := parseDoctorDB("boost doctor\nno such line\n"); err == nil {
 		t.Errorf("a doctor output with no History DB line must be an error, not an empty path")
+	}
+}
+
+// TestFilterRankedByClaimedVolume is the gate on the ordering defect this
+// table exists to avoid. The fixture is the measured shape on the real corpus:
+// `psql` claims a third of everything Boost touched and returns 2%, while
+// `html` claims almost nothing and returns 95%. Ranked by saved tokens, psql
+// reads as a top performer. Ranked by claimed volume with a rate beside it,
+// the corruption-for-no-compression case is the first line you see.
+func TestFilterRankedByClaimedVolume(t *testing.T) {
+	metrics := filterMetrics([]boostFilter{
+		{Name: "html", Source: "builtin", EventCount: 4, TokensBefore: 16026, TokensAfter: 772, SavedTokens: 15254},
+		{Name: "psql", Source: "builtin", EventCount: 143, TokensBefore: 282977, TokensAfter: 277077, SavedTokens: 5900},
+		{Name: "silent", Source: "builtin"},
+	})
+	env := Envelope{Metrics: metrics}
+
+	var order []string
+	for _, m := range metrics {
+		if m.Name == "event_count" {
+			order = append(order, m.Key)
+		}
+	}
+	want := []string{"builtin/psql", "builtin/html", "builtin/silent"}
+	if !slices.Equal(order, want) {
+		t.Errorf("filter order = %v, want %v — heaviest claimed volume must rank first", order, want)
+	}
+
+	// 5,900 of 282,977 is 2.08%: the number that convicts the top row.
+	if got := metricValue(t, env, "saved_rate_percent", "boost_filter", "builtin/psql").(float64); got < 2.07 || got > 2.09 {
+		t.Errorf("psql saved_rate_percent = %v, want ~2.08", got)
+	}
+	if got := metricValue(t, env, "saved_rate_percent", "boost_filter", "builtin/html").(float64); got < 95.1 || got > 95.2 {
+		t.Errorf("html saved_rate_percent = %v, want ~95.18", got)
+	}
+	// A filter that never fired divides by zero. It reports 0, not NaN.
+	if got := metricValue(t, env, "saved_rate_percent", "boost_filter", "builtin/silent").(float64); got != 0 {
+		t.Errorf("silent saved_rate_percent = %v, want an explicit 0", got)
 	}
 }

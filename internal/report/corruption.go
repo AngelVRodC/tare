@@ -227,14 +227,15 @@ func RenderCorruption(w io.Writer, env Envelope) error {
 	// Only the filters that actually fired are worth a line; the envelope
 	// carries all of them, and the withheld count says how many are silent.
 	if rows := groupRows(env.Metrics, "boost_filter"); len(rows) > 0 {
-		fmt.Fprint(tw, "\nBOOST_FILTER\tEVENTS\tTOKENS BEFORE\tTOKENS AFTER\tSAVED\tRETRIEVES\n")
+		fmt.Fprint(tw, "\nBOOST_FILTER\tEVENTS\tTOKENS BEFORE\tTOKENS AFTER\tSAVED\tSAVED %\tRETRIEVES\n")
 		shown, withheld := truncate(rows)
 		for _, r := range shown {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
 				formatValue(r.values["event_count"]),
 				formatValue(r.values["tokens_before"]),
 				formatValue(r.values["tokens_after"]),
 				formatValue(r.values["saved_tokens"]),
+				formatValue(r.values["saved_rate_percent"]),
 				formatValue(r.values["retrieve_count"]))
 		}
 		writeWithheld(tw, withheld, "boost_filter")

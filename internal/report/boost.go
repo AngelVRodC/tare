@@ -187,18 +187,25 @@ func boostReportMetrics(rep *boostReport, useIDs map[string]string) (metrics []M
 	return metrics, warnings
 }
 
-// filterMetrics emits five rows per filter, every filter, heaviest saving
-// first. These aggregates are complete, so the envelope carries all of them —
-// an installed filter that saved nothing is exactly the finding this tool
-// exists to surface. The human table caps itself; the JSON never does.
+// filterMetrics emits six rows per filter, every filter, heaviest claimed
+// volume first. These aggregates are complete, so the envelope carries all of
+// them — an installed filter that saved nothing is exactly the finding this
+// tool exists to surface. The human table caps itself; the JSON never does.
+//
+// Ordering by TokensBefore rather than SavedTokens is the whole point. A
+// filter that claims a third of the corpus and returns 2% is corruption for
+// no compression, but under a saved-first sort it ranks among the winners on
+// the strength of the volume it claimed. Claimed volume ranks; saved_rate_percent
+// convicts.
 func filterMetrics(filters []boostFilter) []Metric {
 	sorted := slices.SortedFunc(slices.Values(filters), func(a, b boostFilter) int {
 		return cmp.Or(
+			cmp.Compare(b.TokensBefore, a.TokensBefore),
 			cmp.Compare(b.SavedTokens, a.SavedTokens),
 			cmp.Compare(b.EventCount, a.EventCount),
 			strings.Compare(a.Name, b.Name))
 	})
-	out := make([]Metric, 0, len(sorted)*5)
+	out := make([]Metric, 0, len(sorted)*6)
 	for _, f := range sorted {
 		key := f.Name
 		if f.Source != "" {
@@ -209,6 +216,7 @@ func filterMetrics(filters []boostFilter) []Metric {
 			MeasuredMetric("tokens_before", "boost_filter", key, f.TokensBefore, "tokens"),
 			MeasuredMetric("tokens_after", "boost_filter", key, f.TokensAfter, "tokens"),
 			MeasuredMetric("saved_tokens", "boost_filter", key, f.SavedTokens, "tokens"),
+			MeasuredMetric("saved_rate_percent", "boost_filter", key, percent(f.SavedTokens, f.TokensBefore), "percent"),
 			MeasuredMetric("retrieve_count", "boost_filter", key, f.RetrieveCount, "retrieves"))
 	}
 	return out

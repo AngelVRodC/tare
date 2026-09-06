@@ -289,3 +289,52 @@ func TestRenderToolsReadsEnvelope(t *testing.T) {
 		}
 	}
 }
+
+// TestShareColumnIsIntegerDerived pins the share column to a division of two
+// measured int64s rather than an accumulation. Two tools whose results are
+// byte-identical are exactly half the corpus context each, so both render
+// 50.0% and earn the top concern grade.
+func TestShareColumnIsIntegerDerived(t *testing.T) {
+	dir := toolCorpus(t,
+		use("t1", "Alpha"), result("t1", `"same"`, false),
+		use("t2", "Bravo"), result("t2", `"same"`, false),
+	)
+	env, err := ToolsEnvelope(dir, "test")
+	if err != nil {
+		t.Fatalf("ToolsEnvelope: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := RenderTools(&buf, env); err != nil {
+		t.Fatalf("RenderTools: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"SHARE", "50.0%", "!!"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table is missing %q\n%s", want, out)
+		}
+	}
+	if got := strings.Count(out, "50.0%"); got != 2 {
+		t.Errorf("want a 50.0%% share on both Alpha and Bravo, got %d\n%s", got, out)
+	}
+}
+
+// TestConcernThresholds pins the one ladder in this program that was chosen
+// rather than measured. The README prints these boundaries as a legend, so a
+// change here is a change to documentation too.
+func TestConcernThresholds(t *testing.T) {
+	cases := []struct {
+		share float64
+		want  string
+	}{
+		{0, ""}, {4.9, ""},
+		{5, "*"}, {19.9, "*"},
+		{20, "**"}, {34.9, "**"},
+		{35, "***"}, {49.9, "***"},
+		{50, "!!"}, {100, "!!"},
+	}
+	for _, c := range cases {
+		if got := concern(c.share); got != c.want {
+			t.Errorf("concern(%v) = %q, want %q", c.share, got, c.want)
+		}
+	}
+}

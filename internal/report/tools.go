@@ -191,19 +191,24 @@ func RenderTools(w io.Writer, env Envelope) error {
 	renderHeader(w, env)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	writeCorpus(tw, env)
+	// mcp_server rows are a subset of tool rows, so their shares are of all
+	// context rather than of each other, and do not sum to 100.
+	context := corpusValue(env, "context_bytes")
 	for _, dim := range []string{"tool", "mcp_server"} {
 		rows := groupRows(env.Metrics, dim)
 		if len(rows) == 0 {
 			continue
 		}
-		fmt.Fprintf(tw, "\n%s\tCALLS\tCONTEXT\tIMAGES\tPRODUCED\tERRORS\n", strings.ToUpper(dim))
+		fmt.Fprintf(tw, "\n%s\tCALLS\tCONTEXT\tIMAGES\tPRODUCED\tERRORS\tSHARE\t\n", strings.ToUpper(dim))
 		for _, r := range rows {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
+			pct, grade := r.share("context_bytes", context)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
 				r.cell("calls"),
 				r.cell("context_bytes"),
 				r.cell("image_bytes"),
 				r.cell("produced_bytes"),
-				r.cell("errors"))
+				r.cell("errors"),
+				pct, grade)
 		}
 	}
 	return renderTail(w, tw, env)
@@ -220,6 +225,64 @@ type row struct {
 func (r row) cell(name string) string {
 	m := r.values[name]
 	return formatValue(m.Value, m.Unit)
+}
+
+// num reads one of a row's metrics as an integer count.
+func (r row) num(name string) int64 {
+	return asInt64(r.values[name].Value)
+}
+
+// share renders one row's slice of a corpus-wide denominator, plus the concern
+// grade for it. A zero denominator prints neither: an absent number is a
+// warning in this codebase, never a 0.0%.
+func (r row) share(name string, whole int64) (pct, grade string) {
+	if whole == 0 {
+		return "", ""
+	}
+	s := percent(r.num(name), whole)
+	return formatValue(s, "percent"), concern(s)
+}
+
+// corpusValue reads one keyless corpus-wide metric off the envelope. Every
+// share denominator is already measured as a single int64, so nothing here is
+// re-accumulated — summing float64 over a Go map range is what made an earlier
+// --json output non-reproducible, and a share is a division, not a sum.
+func corpusValue(env Envelope, name string) int64 {
+	for _, m := range env.Metrics {
+		if m.Dimension == "corpus" && m.Name == name {
+			return asInt64(m.Value)
+		}
+	}
+	return 0
+}
+
+// asInt64 widens the two integer kinds the envelope carries. A value that is
+// neither counts as nothing, which is what a missing metric already meant.
+func asInt64(v any) int64 {
+	switch n := v.(type) {
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	}
+	return 0
+}
+
+// concern grades a share the way git-sizer grades a repository metric: the
+// interpretation lives in the table, so there is no separate prose summary to
+// disagree with it. It collapses at the top rather than running to 30 marks.
+func concern(share float64) string {
+	switch {
+	case share >= 50:
+		return "!!"
+	case share >= 35:
+		return "***"
+	case share >= 20:
+		return "**"
+	case share >= 5:
+		return "*"
+	}
+	return ""
 }
 
 // groupRows folds the flat metric rows of one dimension back into table rows,

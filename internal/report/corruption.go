@@ -173,15 +173,18 @@ func RenderCorruption(w io.Writer, env Envelope) error {
 	writeScalars(tw, env, "boost_mcp_deep")
 
 	if rows := groupRows(env.Metrics, "tool"); len(rows) > 0 {
-		fmt.Fprint(tw, "\nTOOL\tCALLS\tERRORS\tERROR %\tEMPTY\tTRUNCATED\n")
+		fmt.Fprint(tw, "\nTOOL\tCALLS\tERRORS\tERROR %\tEMPTY\tTRUNCATED\tSHARE\t\n")
+		calls := corpusValue(env, "calls")
 		shown, withheld := truncate(rows)
 		for _, r := range shown {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
+			pct, grade := r.share("calls", calls)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
 				r.cell("calls"),
 				r.cell("errors"),
 				r.cell("error_rate_percent"),
 				r.cell("empty_results"),
-				r.cell("truncated_results"))
+				r.cell("truncated_results"),
+				pct, grade)
 		}
 		writeWithheld(tw, withheld, "tool")
 	}

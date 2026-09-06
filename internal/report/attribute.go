@@ -410,6 +410,7 @@ func RenderAttribute(w io.Writer, env Envelope) error {
 	}
 	writeRebillTable(tw, env, sessionDim)
 
+	attachments := corpusValue(env, "attachment_bytes")
 	for _, dim := range []string{
 		"attachment_type", transcript.DimSkill, transcript.DimMcpServer,
 		transcript.DimMcpTool, transcript.DimAgent, transcript.DimHookName,
@@ -418,12 +419,22 @@ func RenderAttribute(w io.Writer, env Envelope) error {
 		if len(rows) == 0 {
 			continue
 		}
-		fmt.Fprintf(tw, "\n%s\tEVENTS\tBYTES\t\t\t\n", strings.ToUpper(dim))
+		// Only attachment_type partitions attachment_bytes. The other five
+		// dimensions are sub-rollups inside a single attachment type — MCP_TOOL
+		// covers 0.3% of all attachment bytes — so a share of the corpus total
+		// would print 0.0% on every row and say nothing at all.
+		whole, header := int64(0), ""
+		if dim == "attachment_type" {
+			whole, header = attachments, "SHARE"
+		}
+		fmt.Fprintf(tw, "\n%s\tEVENTS\tBYTES\t%s\t\t\n", strings.ToUpper(dim), header)
 		shown, withheld := truncate(rows)
 		for _, r := range shown {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t\t\t\n", r.key,
+			pct, grade := r.share("attachment_bytes", whole)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t\n", r.key,
 				r.cell("attachment_events"),
-				r.cell("attachment_bytes"))
+				r.cell("attachment_bytes"),
+				pct, grade)
 		}
 		writeWithheld(tw, withheld, dim)
 	}
@@ -435,7 +446,8 @@ func writeRebillTable(tw io.Writer, env Envelope, dimension string) {
 	if len(rows) == 0 {
 		return
 	}
-	fmt.Fprintf(tw, "\n%s\tRESPONSES\tFRESH\tREBILLED\tMULTIPLIER\tUSD (est)\n", strings.ToUpper(dimension))
+	fmt.Fprintf(tw, "\n%s\tRESPONSES\tFRESH\tREBILLED\tMULTIPLIER\tUSD (est)\tSHARE\t\n", strings.ToUpper(dimension))
+	rebilled := corpusValue(env, "rebilled_tokens")
 	shown, withheld := truncate(rows)
 	for _, r := range shown {
 		// A session with no cost-state has no cost_usd row at all. It says
@@ -444,12 +456,13 @@ func writeRebillTable(tw io.Writer, env Envelope, dimension string) {
 		if _, ok := r.values["cost_usd"]; ok {
 			usd = r.cell("cost_usd")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
+		pct, grade := r.share("rebilled_tokens", rebilled)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
 			r.cell("responses"),
 			r.cell("fresh_tokens"),
 			r.cell("rebilled_tokens"),
 			r.cell("rebill_multiplier"),
-			usd)
+			usd, pct, grade)
 	}
 	writeWithheld(tw, withheld, dimension)
 }

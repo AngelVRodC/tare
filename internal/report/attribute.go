@@ -179,9 +179,9 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 	// allocation. What it does not reach is the gap coverage just measured:
 	// models billed with no transcript events to allocate across.
 	var allocated float64
-	for dk, usd := range costByDim {
+	for _, dk := range slices.SortedFunc(maps.Keys(costByDim), compareDimKey) {
 		if dk.dimension == sessionDim {
-			allocated += usd
+			allocated += costByDim[dk]
 		}
 	}
 
@@ -248,7 +248,13 @@ func allocateDims(weights map[weightKey]float64, byModel map[sessionModel]*rebil
 	costStates map[string]*transcript.CostState) map[dimKey]float64 {
 
 	out := map[dimKey]float64{}
-	for wk, w := range weights {
+	// Sorted, not ranged: Go randomises map iteration and float addition is
+	// not associative, so an unordered sum lands on a different last bit each
+	// run. That is enough to make two `tare report --json` runs over an
+	// unchanged corpus differ — the one thing the artifact promises they will
+	// not do.
+	for _, wk := range slices.SortedFunc(maps.Keys(weights), compareWeightKey) {
+		w := weights[wk]
 		cs := costStates[wk.session]
 		if cs == nil {
 			continue
@@ -260,6 +266,25 @@ func allocateDims(weights map[weightKey]float64, byModel map[sessionModel]*rebil
 		out[dimKey{wk.dimension, wk.key}] += allocate(mu.CostUSD, w, byModel[wk.sessionModel].Weight)
 	}
 	return out
+}
+
+// compareWeightKey is a total order over weightKey, so allocation sums in the
+// same order on every run.
+func compareWeightKey(a, b weightKey) int {
+	return cmp.Or(
+		strings.Compare(a.session, b.session),
+		strings.Compare(a.model, b.model),
+		strings.Compare(a.dimension, b.dimension),
+		strings.Compare(a.key, b.key),
+	)
+}
+
+// compareDimKey is the same total order over dimKey.
+func compareDimKey(a, b dimKey) int {
+	return cmp.Or(
+		strings.Compare(a.dimension, b.dimension),
+		strings.Compare(a.key, b.key),
+	)
 }
 
 // coverageMetrics compares each billed session-model against what the

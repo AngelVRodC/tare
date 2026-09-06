@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/AngelVRodC/tare/internal/report"
 )
@@ -81,6 +82,15 @@ func run(args []string, out io.Writer) error {
 			return report.WriteJSON(out, env)
 		}
 		return report.RenderCorruption(out, env)
+	case "report":
+		rep, err := report.BuildReport(*dir, version)
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return report.WriteJSON(out, rep.Envelope)
+		}
+		return report.RenderReport(out, rep, time.Now())
 	default:
 		usage(os.Stderr)
 		return fmt.Errorf("unknown command %q", cmd)
@@ -106,6 +116,7 @@ commands:
   tools      per-tool call counts, context bytes, produced bytes and errors
   attribute  tokens by skill/plugin/agent/MCP, context re-billing, attachment volume
   corruption per-tool error, empty and truncation rates, plus the Boost counterfactual
+  report     all four composed into one reproducible artifact (Markdown, or --json)
 
 flags (given after the command):
   --dir string   transcript root (default ~/.claude/projects)

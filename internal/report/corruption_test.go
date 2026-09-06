@@ -124,7 +124,7 @@ func TestRenderCorruptionReadsEnvelope(t *testing.T) {
 		t.Fatalf("CorruptionEnvelope: %v", err)
 	}
 	var buf bytes.Buffer
-	if err := RenderCorruption(&buf, env); err != nil {
+	if err := RenderCorruption(&buf, env, 15); err != nil {
 		t.Fatalf("RenderCorruption: %v", err)
 	}
 	out := buf.String()

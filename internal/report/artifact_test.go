@@ -121,6 +121,44 @@ func TestReportMarkdownVariesOnlyByTimestamp(t *testing.T) {
 	}
 }
 
+// TestReportRendersEveryRow pins the artifact against the terminal's cap. A
+// Markdown file is redirected to disk by definition, so a row withheld there
+// is a row nobody can reach — `--all` is not spellable after the fact.
+//
+// The envelopes are built by hand rather than from reportCorpus: that fixture's
+// token and dollar figures are chosen so no share is an exact binary fraction,
+// which is what makes TestReportReproducible able to catch a summation-order
+// defect. Twenty rows are needed here and none of them need to be arithmetic.
+func TestReportRendersEveryRow(t *testing.T) {
+	const rows = 20 // more than the terminal's default cap of 15
+	var metrics []Metric
+	for i := range rows {
+		key := fmt.Sprintf("skill-%02d", i)
+		metrics = append(metrics,
+			MeasuredMetric("attachment_events", transcript.DimSkill, key, int64(i+1), "events"),
+			MeasuredMetric("attachment_bytes", transcript.DimSkill, key, int64(1_000*(i+1)), "bytes"))
+	}
+	env := Envelope{Command: "attribute", Metrics: metrics}
+
+	var buf bytes.Buffer
+	if err := RenderReport(&buf, Report{Attribute: env, Envelope: env}, time.Unix(0, 0).UTC()); err != nil {
+		t.Fatalf("RenderReport: %v", err)
+	}
+	out := buf.String()
+
+	for i := range rows {
+		if key := fmt.Sprintf("skill-%02d", i); !strings.Contains(out, key) {
+			t.Errorf("the report withheld %s", key)
+		}
+	}
+	if strings.Contains(out, "showing top") {
+		t.Error("the report announced a truncation; it does not truncate")
+	}
+	if strings.Contains(out, "capped at") {
+		t.Error("the preamble still claims the tables are capped")
+	}
+}
+
 // TestBuildReportSilentWhenProgressNil pins the default. A nil progress writer
 // must not emit a byte, and the claim is about the process streams and not
 // just the parameter: a stray Fprintln to os.Stderr inside a pass is invisible

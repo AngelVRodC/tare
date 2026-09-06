@@ -168,7 +168,10 @@ func writeScalars(tw io.Writer, env Envelope, dimension string) {
 
 // RenderCorruption prints the envelope as a table. Like every other renderer
 // it reads only the envelope, so the table and `--json` cannot disagree.
-func RenderCorruption(w io.Writer, env Envelope) error {
+//
+// top caps the two ranked tables the way it does in RenderAttribute; zero or
+// less prints every row.
+func RenderCorruption(w io.Writer, env Envelope, top int) error {
 	renderHeader(w, env)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	writeScalars(tw, env, "corpus")
@@ -179,7 +182,7 @@ func RenderCorruption(w io.Writer, env Envelope) error {
 	if rows := groupRows(env.Metrics, "tool"); len(rows) > 0 {
 		fmt.Fprint(tw, "\nTOOL\tCALLS\tERRORS\tERROR %\tEMPTY\tTRUNCATED\tSHARE\t\n")
 		calls := corpusValue(env, "calls")
-		shown, withheld := truncate(rows)
+		shown, total := truncate(rows, top)
 		for _, r := range shown {
 			pct, grade := r.share("calls", calls)
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
@@ -190,7 +193,7 @@ func RenderCorruption(w io.Writer, env Envelope) error {
 				r.cell("truncated_results"),
 				pct, grade)
 		}
-		writeWithheld(tw, withheld, "tool")
+		writeTruncation(tw, len(shown), total, "tool")
 	}
 
 	if rows := groupRows(env.Metrics, "truncation_marker"); len(rows) > 0 {
@@ -201,10 +204,11 @@ func RenderCorruption(w io.Writer, env Envelope) error {
 	}
 
 	// Only the filters that actually fired are worth a line; the envelope
-	// carries all of them, and the withheld count says how many are silent.
+	// carries all of them, and the line under the table says how many are
+	// silent and how to see them.
 	if rows := groupRows(env.Metrics, "boost_filter"); len(rows) > 0 {
 		fmt.Fprint(tw, "\nBOOST_FILTER\tEVENTS\tTOKENS BEFORE\tTOKENS AFTER\tSAVED\tSAVED %\tRETRIEVES\n")
-		shown, withheld := truncate(rows)
+		shown, total := truncate(rows, top)
 		for _, r := range shown {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
 				r.cell("event_count"),
@@ -214,7 +218,7 @@ func RenderCorruption(w io.Writer, env Envelope) error {
 				r.cell("saved_rate_percent"),
 				r.cell("retrieve_count"))
 		}
-		writeWithheld(tw, withheld, "boost_filter")
+		writeTruncation(tw, len(shown), total, "boost_filter")
 	}
 	return renderTail(w, tw, env)
 }

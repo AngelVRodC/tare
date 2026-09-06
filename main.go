@@ -18,6 +18,12 @@ import (
 // version is the build version reported in the --json envelope.
 const version = "0.1.0"
 
+// defaultTop is how many rows per dimension the tables print unless told
+// otherwise. It lives here rather than in internal/report because the cap is a
+// terminal convenience the CLI decides: the renderers obey whatever they are
+// handed, and `tare report` hands them nothing at all.
+const defaultTop = 15
+
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "tare:", err)
@@ -54,6 +60,15 @@ func run(args []string, out io.Writer) error {
 		fs.BoolVar(&deep, "boost-deep", false,
 			"join every Boost MCP call from its history DB via sqlite3, not the 100-row JSON sample")
 	}
+	// Same reason as --boost-deep: registered only on the two commands whose
+	// tables are capped, so `tare scan --all` and `tare report --top 3` are
+	// errors rather than flags that silently do nothing.
+	var all bool
+	top := defaultTop
+	if cmd == "attribute" || cmd == "corruption" {
+		fs.BoolVar(&all, "all", false, "print every row of every table, not just the top --top")
+		fs.IntVar(&top, "top", defaultTop, "rows per dimension in the tables; 0 prints every row")
+	}
 	if err := fs.Parse(args[1:]); err != nil {
 		// `tare scan --help` is the same request as `tare --help`, and gets the
 		// same answer: usage on stdout, exit 0. flag reports it as an error.
@@ -62,6 +77,14 @@ func run(args []string, out io.Writer) error {
 			return nil
 		}
 		return err
+	}
+	if top < 0 {
+		return fmt.Errorf("--top needs 0 or more rows, got %d — 0 means every row", top)
+	}
+	// --all is --top 0 under another name, so it needs no sentinel of its own:
+	// a cap of zero or less truncates nothing. Given both, --all wins.
+	if all {
+		top = 0
 	}
 
 	switch cmd {
@@ -91,7 +114,7 @@ func run(args []string, out io.Writer) error {
 		if *asJSON {
 			return report.WriteJSON(out, env)
 		}
-		return report.RenderAttribute(out, env)
+		return report.RenderAttribute(out, env, top)
 	case "corruption":
 		env, err := report.CorruptionEnvelope(*dir, version, deep)
 		if err != nil {
@@ -100,7 +123,7 @@ func run(args []string, out io.Writer) error {
 		if *asJSON {
 			return report.WriteJSON(out, env)
 		}
-		return report.RenderCorruption(out, env)
+		return report.RenderCorruption(out, env, top)
 	case "report":
 		// Four passes over a quarter-gigabyte corpus take about four seconds
 		// with nothing printed, which reads as a hang. One line per pass to
@@ -171,5 +194,7 @@ flags (given after the command):
   --dir string   transcript root (default ~/.claude/projects)
   --json         emit the JSON envelope instead of a table
   --boost-deep   corruption only: join every Boost MCP call, not the 100-row sample
+  --top N        attribute, corruption only: rows per dimension (default 15, 0 for every row)
+  --all          attribute, corruption only: same as --top 0
 `)
 }

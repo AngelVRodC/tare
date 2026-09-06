@@ -160,9 +160,10 @@ func RenderReport(w io.Writer, r Report, generated time.Time) error {
 	fmt.Fprintf(w, "\nEvery row below carries a `measured` or `estimated` derivation. A block whose\n"+
 		"rows all agree says so once, in a footer under it; the column appears only\n"+
 		"where a block genuinely mixes the two. `--json` tags every row. An estimated row names\n"+
-		"the method it was derived by. See Derivations. The tables are capped at %d rows\n"+
-		"per dimension — `--json` carries all %s of them.\n",
-		tableRows, comma(int64(len(env.Metrics))))
+		"the method it was derived by. See Derivations. Every table below prints every row —\n"+
+		"a terminal caps them at a screenful, a file has no reason to — and `--json` carries\n"+
+		"the same %s metric rows behind them.\n",
+		comma(int64(len(env.Metrics))))
 
 	for _, sec := range []struct {
 		title  string
@@ -171,8 +172,14 @@ func RenderReport(w io.Writer, r Report, generated time.Time) error {
 	}{
 		{"Corpus inventory", r.Scan, RenderScan},
 		{"Per-tool byte attribution", r.Tools, RenderTools},
-		{"Token attribution and context re-billing", r.Attribute, RenderAttribute},
-		{"Corruption detection", r.Corruption, RenderCorruption},
+		// A cap of 0 truncates nothing: truncation is a terminal convenience
+		// and this document is a file by definition. Only the two renderers
+		// that truncate take the cap, and a closure carries it so the other
+		// two keep a signature with no parameter they would ignore.
+		{"Token attribution and context re-billing", r.Attribute,
+			func(w io.Writer, e Envelope) error { return RenderAttribute(w, e, 0) }},
+		{"Corruption detection", r.Corruption,
+			func(w io.Writer, e Envelope) error { return RenderCorruption(w, e, 0) }},
 	} {
 		fmt.Fprintf(w, "\n## %s — `tare %s`\n\n```text\n", sec.title, sec.env.Command)
 		if err := sec.render(w, sec.env); err != nil {

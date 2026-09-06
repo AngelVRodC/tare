@@ -438,21 +438,21 @@ func percent(part, whole int64) float64 {
 	return 100 * float64(part) / float64(whole)
 }
 
-// tableRows caps how many rows of a dimension the human table prints. The
-// envelope carries every row; the terminal does not need 134 sessions.
-const tableRows = 15
-
 // RenderAttribute prints the envelope as a table. Like the other renderers it
 // reads only the envelope, so the table and `--json` cannot disagree.
-func RenderAttribute(w io.Writer, env Envelope) error {
+//
+// top caps how many rows of a dimension each table prints; zero or less prints
+// every one. The envelope always carries them all, so the cap only ever
+// changes what a terminal is asked to scroll.
+func RenderAttribute(w io.Writer, env Envelope, top int) error {
 	renderHeader(w, env)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	writeCorpus(tw, env)
 
 	for _, d := range attributionDims {
-		writeRebillTable(tw, env, d.name)
+		writeRebillTable(tw, env, d.name, top)
 	}
-	writeRebillTable(tw, env, sessionDim)
+	writeRebillTable(tw, env, sessionDim, top)
 
 	attachments := corpusValue(env, "attachment_bytes")
 	for _, dim := range []string{
@@ -474,7 +474,7 @@ func RenderAttribute(w io.Writer, env Envelope) error {
 			whole, header = 0, ""
 		}
 		fmt.Fprintf(tw, "\n%s\tEVENTS\tBYTES\t%s\t\t\n", strings.ToUpper(dim), header)
-		shown, withheld := truncate(rows)
+		shown, total := truncate(rows, top)
 		for _, r := range shown {
 			pct, grade := r.share("attachment_bytes", whole)
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t\n", r.key,
@@ -482,7 +482,7 @@ func RenderAttribute(w io.Writer, env Envelope) error {
 				r.cell("attachment_bytes"),
 				pct, grade)
 		}
-		writeWithheld(tw, withheld, dim)
+		writeTruncation(tw, len(shown), total, dim)
 	}
 	return renderTail(w, tw, env)
 }
@@ -499,14 +499,14 @@ func gradeable(rows []row, name string, whole int64) bool {
 	return false
 }
 
-func writeRebillTable(tw io.Writer, env Envelope, dimension string) {
+func writeRebillTable(tw io.Writer, env Envelope, dimension string, top int) {
 	rows := groupRows(env.Metrics, dimension)
 	if len(rows) == 0 {
 		return
 	}
 	fmt.Fprintf(tw, "\n%s\tRESPONSES\tFRESH\tREBILLED\tMULTIPLIER\tUSD (est)\tSHARE\t\n", strings.ToUpper(dimension))
 	rebilled := corpusValue(env, "rebilled_tokens")
-	shown, withheld := truncate(rows)
+	shown, total := truncate(rows, top)
 	for _, r := range shown {
 		// A session with no cost-state has no cost_usd row at all. It says
 		// "unavailable" and never "0.00" — the difference is the finding.
@@ -522,19 +522,35 @@ func writeRebillTable(tw io.Writer, env Envelope, dimension string) {
 			r.cell("rebill_multiplier"),
 			usd, pct, grade)
 	}
-	writeWithheld(tw, withheld, dimension)
+	writeTruncation(tw, len(shown), total, dimension)
 }
 
-// truncate caps a table at tableRows and reports how many it withheld.
-func truncate(rows []row) (shown []row, withheld int) {
-	if len(rows) <= tableRows {
-		return rows, 0
+// truncate caps a table at top rows and reports the true total, not the
+// remainder: the line under the table names both halves, and a caller that got
+// only the remainder would have to add them back.
+//
+// A top of zero or less truncates nothing, which is what `--all` and `--top 0`
+// both ask for — one rule covers them, so there is no second sentinel.
+func truncate(rows []row, top int) (shown []row, total int) {
+	if top <= 0 || len(rows) <= top {
+		return rows, len(rows)
 	}
-	return rows[:tableRows], len(rows) - tableRows
+	return rows[:top], len(rows)
 }
 
-func writeWithheld(tw io.Writer, withheld int, dimension string) {
-	if withheld > 0 {
-		fmt.Fprintf(tw, "… and %d more %s rows (see --json)\t\t\t\t\t\n", withheld, dimension)
+// writeTruncation says a table was cut and names the flag that uncuts it. The
+// line it replaced printed a count with no way to reach the rows it hid.
+//
+// No sort key is named. Four tables share this line and each ranks by a
+// different column — attachment bytes, re-billed tokens, calls, and the boost
+// filter's own emission order — so any one key would be a false claim on three
+// of them.
+//
+// It carries no tabs on purpose: a tab-terminated first cell joins the table's
+// column block above it and stretches that column to the width of this whole
+// sentence.
+func writeTruncation(tw io.Writer, shown, total int, dimension string) {
+	if shown < total {
+		fmt.Fprintf(tw, "showing top %d of %d %s rows — use --all\n", shown, total, dimension)
 	}
 }

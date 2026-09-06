@@ -2,6 +2,7 @@ package report
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -386,7 +387,7 @@ func TestRenderAttributeReadsEnvelope(t *testing.T) {
 			tokens{in: 100, out: 20, read: 2_360}, map[string]string{"attributionPlugin": "desplega"}),
 	)
 	var buf strings.Builder
-	if err := RenderAttribute(&buf, env); err != nil {
+	if err := RenderAttribute(&buf, env, 15); err != nil {
 		t.Fatalf("RenderAttribute: %v", err)
 	}
 	out := buf.String()
@@ -394,6 +395,44 @@ func TestRenderAttributeReadsEnvelope(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("table is missing %q\n%s", want, out)
 		}
+	}
+}
+
+// TestTruncateReportsTotal pins the truncation contract. A cut table has to
+// name both counts and the flag that lifts the cut: the line this replaced
+// printed "… and 48 more tool rows (see --json)", a count whose escape hatch
+// was a flag it did not name and that no other line mentioned either.
+func TestTruncateReportsTotal(t *testing.T) {
+	rows := make([]row, 20)
+	for i := range rows {
+		rows[i] = row{key: fmt.Sprintf("k%02d", i), values: map[string]Metric{}}
+	}
+
+	shown, total := truncate(rows, 5)
+	if len(shown) != 5 || total != 20 {
+		t.Errorf("truncate(20 rows, 5) = %d shown / %d total, want 5 / 20", len(shown), total)
+	}
+	// Zero or less is --all and --top 0 both; a cap at or above the row count
+	// withholds nothing either way.
+	for _, top := range []int{0, -1, 20, 99} {
+		shown, total := truncate(rows, top)
+		if len(shown) != 20 || total != 20 {
+			t.Errorf("truncate(20 rows, %d) = %d shown / %d total, want 20 / 20", top, len(shown), total)
+		}
+	}
+
+	var buf strings.Builder
+	writeTruncation(&buf, 5, 20, "session")
+	if want := "showing top 5 of 20 session rows — use --all"; !strings.Contains(buf.String(), want) {
+		t.Errorf("truncation line = %q, want it to contain %q", buf.String(), want)
+	}
+
+	// Nothing withheld, nothing to announce — otherwise --all would print a
+	// line saying it showed everything.
+	buf.Reset()
+	writeTruncation(&buf, 20, 20, "session")
+	if buf.Len() != 0 {
+		t.Errorf("an un-truncated table announced %q, want silence", buf.String())
 	}
 }
 

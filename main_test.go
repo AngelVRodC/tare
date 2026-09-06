@@ -44,6 +44,34 @@ func TestLeadingFlagSaysOrder(t *testing.T) {
 	}
 }
 
+// TestTruncationFlagsAreScoped covers the other half of the "registered only
+// where it means something" rule the --boost-deep precedent set: a flag that
+// silently does nothing is worse than one that errors. `tare report` is in the
+// list because the artifact never truncates, so a cap there would be dead.
+//
+// It also pins the negative cap, which has to be rejected before a pass reads
+// a quarter of a gigabyte to render nothing.
+func TestTruncationFlagsAreScoped(t *testing.T) {
+	for _, args := range [][]string{
+		{"scan", "--all"}, {"tools", "--all"}, {"report", "--all"},
+		{"scan", "--top", "3"}, {"report", "--top", "3"},
+	} {
+		var buf bytes.Buffer
+		if err := run(args, &buf); err == nil {
+			t.Errorf("run(%v) returned nil, want an error — the flag means nothing there", args)
+		}
+	}
+
+	var buf bytes.Buffer
+	err := run([]string{"attribute", "--top", "-1"}, &buf)
+	if err == nil {
+		t.Fatal("run([attribute --top -1]) returned nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "--top needs 0 or more rows") {
+		t.Errorf("error is %q, want it to say what a valid --top is", err)
+	}
+}
+
 // TestPerCommandHelpAlsoExitsZero covers the half of the convention the first
 // pass missed: flag reports --help as an error, so `tare scan --help` exited 1
 // to stderr while `tare --help` exited 0 to stdout.

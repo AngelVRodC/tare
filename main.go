@@ -33,6 +33,13 @@ func run(args []string, out io.Writer) error {
 	fs.SetOutput(os.Stderr)
 	dir := fs.String("dir", defaultDir(), "transcript root directory")
 	asJSON := fs.Bool("json", false, "emit the JSON envelope instead of a table")
+	// Registered only where it means something, so `tare scan --boost-deep`
+	// is an error rather than a flag that silently does nothing.
+	var deep bool
+	if cmd == "corruption" {
+		fs.BoolVar(&deep, "boost-deep", false,
+			"join every Boost MCP call from its history DB via sqlite3, not the 100-row JSON sample")
+	}
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -65,6 +72,15 @@ func run(args []string, out io.Writer) error {
 			return report.WriteJSON(out, env)
 		}
 		return report.RenderAttribute(out, env)
+	case "corruption":
+		env, err := report.CorruptionEnvelope(*dir, version, deep)
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return report.WriteJSON(out, env)
+		}
+		return report.RenderCorruption(out, env)
 	default:
 		usage(os.Stderr)
 		return fmt.Errorf("unknown command %q", cmd)
@@ -89,9 +105,11 @@ commands:
   scan       corpus inventory: files, bytes, date range, per-type event counts
   tools      per-tool call counts, context bytes, produced bytes and errors
   attribute  tokens by skill/plugin/agent/MCP, context re-billing, attachment volume
+  corruption per-tool error, empty and truncation rates, plus the Boost counterfactual
 
 flags (given after the command):
   --dir string   transcript root (default ~/.claude/projects)
   --json         emit the JSON envelope instead of a table
+  --boost-deep   corruption only: join every Boost MCP call, not the 100-row sample
 `)
 }

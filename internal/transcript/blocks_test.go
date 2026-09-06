@@ -145,3 +145,42 @@ func TestIsError(t *testing.T) {
 		t.Errorf("errors = %d, want 1", errs)
 	}
 }
+
+// TestTruncationMarkerScan covers the marker scanner directly: the literal
+// strings a tool emits fire, and prose about truncation does not.
+func TestTruncationMarkerScan(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"output [truncated]", "[truncated]"},
+		{"rows ... (truncated)", "... (truncated)"},
+		{"func Foo(){}\n(truncated; call boostgraph_explore for the rest)", "(truncated; call "},
+		{"<response clipped>", "<response clipped>"},
+		{"[Output truncated after 200 lines]", "[Output truncated"},
+		{"the tool truncates its output, which we consider corruption", ""},
+		{"287 lines truncated in some other tool's docs", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := truncationMarker(tc.in); got != tc.want {
+			t.Errorf("truncationMarker(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestBlocksCarryMarker checks the marker survives both content shapes: a
+// plain string result and an array of text blocks.
+func TestBlocksCarryMarker(t *testing.T) {
+	for _, content := range []string{
+		`"stdout [truncated]"`,
+		`[{"type":"text","text":"stdout [truncated]"}]`,
+	} {
+		ev := Event{Message: []byte(
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":` + content + `}]}`)}
+		_, results := ev.Blocks()
+		if len(results) != 1 {
+			t.Fatalf("content %s: got %d results, want 1", content, len(results))
+		}
+		if results[0].TruncationMarker != "[truncated]" {
+			t.Errorf("content %s: marker = %q, want %q", content, results[0].TruncationMarker, "[truncated]")
+		}
+	}
+}

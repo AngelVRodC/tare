@@ -99,3 +99,31 @@ func TestHumanizeBytesPromotesOnRoundedValue(t *testing.T) {
 		}
 	}
 }
+
+// TestLabelFallsThrough pins the contract that keeps the labels map optional:
+// a mapped name reads as English, an unmapped one prints as it is. A metric
+// added without a label degrades to its JSON name, never to an empty cell.
+func TestLabelFallsThrough(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+	}{
+		// The gap is the transcripts Claude Code has forgotten, and the label
+		// has to say that — "Retention gap" only restates the subtraction.
+		{"retention_gap", "Sessions no longer on disk"},
+		{"files_top_level", "Top-level sessions"},
+		// The sample and the complete table share one shape; the label must
+		// keep the word that tells them apart.
+		{"filtered_response_bytes", "Bytes after filtering"},
+		{"sampled_filtered_response_bytes", "Bytes after filtering, sampled"},
+		// Unmapped: a new metric, and a key that must never be rewritten.
+		{"some_future_metric", "some_future_metric"},
+		{"mcp__context7__query-docs", "mcp__context7__query-docs"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := label(c.name); got != c.want {
+			t.Errorf("label(%q) = %q, want %q", c.name, got, c.want)
+		}
+	}
+}

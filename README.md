@@ -71,31 +71,29 @@ $ tare tools
 
 ```
 tare tools — /Users/you/.claude/projects
-2026-08-06 .. 2026-09-06
+2026-08-10 .. 2026-09-06
 
 CORPUS
-tool_use_blocks              14,819
-tool_result_blocks           14,818
-unmatched_results            0
-unanswered_uses              1
-distinct_tools               63
-calls                        14,818
-context_bytes                36.5 MB
-image_bytes                  2.3 MB
-image_results                15
-produced_bytes               40.9 MB
-errors                       369
-externalised_results         39
-externalised_produced_bytes  2.1 MB
-externalised_context_bytes   85.8 kB
+Tool calls requested                    15,194
+Tool results returned                   15,193
+Results with no matching call           0
+Calls still awaiting a result           1
+Distinct tools                          64
+Tool calls                              15,193
+Bytes returned into context             37.0 MB
+Image bytes returned                    2.3 MB
+Results carrying an image               15
+Bytes tools produced                    41.3 MB
+Calls that returned an error            377
+Results written to a side file          39
+Bytes produced into side files          2.1 MB
+Context bytes those results still cost  85.8 kB
 all rows measured
 
 TOOL                                                        CALLS  CONTEXT   IMAGES  PRODUCED  ERRORS  SHARE
-Bash                                                        8,774  17.3 MB   0 B     19.3 MB   254     47.3%  ***
-Read                                                        1,446  12.9 MB   2.3 MB  15.2 MB   15      35.3%  ***
-mcp__plugin_sre_grafana-prod__query_loki_logs               644    1.9 MB    0 B     1.9 MB    26      5.1%   *
-Grep                                                        502    1.0 MB    0 B     1.0 MB    4       2.9%
-WebSearch                                                   296    829.7 kB  0 B     829.7 kB  4       2.3%
+Bash                                                        9,149  17.9 MB   0 B     20.0 MB   262     48.5%  ***
+Read                                                        1,406  12.6 MB   2.3 MB  15.0 MB   15      34.2%  **
+mcp__plugin_sre_grafana-prod__query_loki_logs               644    1.9 MB    0 B     1.9 MB    26      5.0%   *
 ```
 
 Then `tare attribute` for the same volume rolled up by skill, plugin, agent and
@@ -128,8 +126,8 @@ Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
 |---|---|---|
 | `tare scan` | What is in the corpus at all — files, bytes, date range, event types, CLI versions, retention gap | — |
 | `tare tools` | What each tool cost — calls, context bytes in, produced bytes out, errors | — |
-| `tare attribute` | Which skill / plugin / agent / MCP server the tokens belong to, and how much prior context was re-billed | — |
-| `tare corruption` | What share of calls errored, returned nothing, or carried a truncation marker | `--boost-deep` |
+| `tare attribute` | Which skill / plugin / agent / MCP server the tokens belong to, and how much prior context was re-billed | `--top`, `--all` |
+| `tare corruption` | What share of calls errored, returned nothing, or carried a truncation marker | `--boost-deep`, `--top`, `--all` |
 | `tare report` | All four, composed into one reproducible artifact | — |
 
 | Global flag | Default | Effect |
@@ -141,6 +139,14 @@ Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
 rather than the 100-row JSON sample. It is registered on `corruption` only, on
 purpose, so `tare scan --boost-deep` is an error rather than a flag that
 silently does nothing.
+
+`--top N` sets how many rows each dimension prints — 15 by default, `0` for all
+of them — and `--all` is `--top 0` under another name. A table that was cut says
+so and names the flag: `showing top 15 of 67 skill rows — use --all`. Both are
+registered on `attribute` and `corruption` only, for the same reason
+`--boost-deep` is: `scan` and `tools` print every row already, and the
+Markdown `tare report` never truncates at all — a file is not a terminal, and
+`--all` is not spellable after the fact by whoever reads the file.
 
 `tare report` writes the artifact: Markdown for a reader, `--json` for a
 machine. Both are self-contained — the header records the tool version, the
@@ -297,6 +303,8 @@ sessions against 141 transcripts still on disk: 3 gone.
 | `tare: flags go after the command` | Exactly that: `tare scan --json`, not `tare --json scan`. |
 | `tare: unknown command "tool"` | Not a subcommand. `tare --help` prints the five that are. |
 | `tare: flag provided but not defined: -boost-deep` | `--boost-deep` is registered on `corruption` only, so that it cannot silently do nothing elsewhere. |
+| `tare: flag provided but not defined: -all` | `--all` and `--top` are registered on `attribute` and `corruption` only — the two commands whose tables are capped. |
+| `tare: --top needs 0 or more rows` | `--top` counts rows. `0` means every row, which is what `--all` asks for. |
 | `files 0` and an empty date range | `--dir` is not a transcript root. It should contain per-project subdirectories of `*.jsonl`. |
 | Two runs disagree | The corpus is live. Copy it and point `--dir` at the copy — see [Reproducibility](#reproducibility). |
 | Dollars read `unavailable` | That session has no `cost-state` event. Reporting the gap is deliberate; reporting `$0.00` would be a lie. |

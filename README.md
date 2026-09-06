@@ -3,6 +3,7 @@
 ![Go](https://img.shields.io/badge/go-1.27%2B-00ADD8?logo=go&logoColor=white)
 ![Dependencies](https://img.shields.io/badge/dependencies-0-success)
 ![Network](https://img.shields.io/badge/network-none-success)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 *The weight of the empty container, excluded from the payload.*
 
@@ -274,6 +275,25 @@ sessions against 136 transcripts still on disk: 8 gone.
 
 ## Contributing
 
+Issues and pull requests are welcome. The most useful contribution is a
+transcript shape this tool gets wrong — Claude Code has written this corpus in
+28 versions so far, and the next one will move something again.
+
+### Getting set up
+
+```bash
+git clone https://github.com/AngelVRodC/tare
+cd tare
+go build ./...
+go test ./...
+```
+
+Go 1.27 or later, and nothing else. Tests read fixture corpora written to
+`t.TempDir()`, never your real transcripts, so the suite is safe to run on any
+machine.
+
+### Before you open a pull request
+
 ```bash
 go build ./...
 go test ./...
@@ -282,9 +302,33 @@ gofmt -l .               # expect no output
 go list -m all | wc -l   # expect 1
 ```
 
-The last line is not a formality. A dependency added here costs the tool its
-argument, so it has to be shown that the standard library is insufficient
-before a module is added.
+### The invariants a change must not break
 
-Tests read fixture corpora written to `t.TempDir()`, never your real
-transcripts.
+These are load-bearing, not preferences. A pull request that breaks one needs
+to argue the case in its description, not quietly work around it.
+
+| Invariant | Why | Where it is explained |
+|---|---|---|
+| Standard library only | A tool arguing that your tooling costs more than it returns ships with no dependencies or it argues against itself | [Dependencies](#dependencies) |
+| Stream, never load | The corpus is a quarter of a gigabyte and grows | [How it works](#how-it-works) |
+| `bufio.Reader`, never `bufio.Scanner` | The longest measured line is 514,199 bytes; any cap is a knob to re-tune later | [How it works](#how-it-works) |
+| Sniff the shape, never trust a version field | 28 CLI versions wrote this corpus and none of them promised a schema | [How it works](#how-it-works) |
+| Loud on the join, quiet on the unknown | An unmatched `tool_use_id` is a defect; an unrecognised event type is a counter | [How it works](#how-it-works) |
+| Every metric carries a `derivation` | An untagged number cannot be argued with | [Every number is tagged](#every-number-is-tagged) |
+| No network, ever | Transcript content does not leave the machine | [What it deliberately does not do](#what-it-deliberately-does-not-do) |
+
+`go list -m all | wc -l` is not a formality. Before a module is added it has to
+be shown that the standard library is insufficient.
+
+### Commits
+
+Conventional commits — `fix(report): …`, `docs: …`, `refactor(transcript): …`.
+Work that implements a numbered plan phase commits as `[phase N] <description>`.
+
+A change to parsing or metrics comes with a test. The fixtures live beside the
+code they exercise, and a new transcript shape is worth more as a fixture than
+as a bug report.
+
+## License
+
+[MIT](LICENSE) © Angel Rodriguez

@@ -322,6 +322,14 @@ func day(ts string) string {
 // and a bare count are four different things, and printing all four through
 // %g is what made these tables read as JSON with tab stops.
 func formatValue(v any, unit string) string {
+	// An omitted metric reaches here as a nil value, because row.cell reads a
+	// name the row does not carry and gets the zero Metric back. The fallback
+	// below would print the literal "<nil>" for it. This codebase's rule is
+	// that an absent number is a warning, never a 0 — and "<nil>" in a column
+	// is worse than either, so a blank cell is what an omitted metric renders as.
+	if v == nil {
+		return ""
+	}
 	switch unit {
 	case "bytes":
 		switch n := v.(type) {

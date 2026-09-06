@@ -46,7 +46,10 @@ func TestFormatValueByUnit(t *testing.T) {
 		{"events", 60, "60"},
 		{"sessions", int64(-3), "-3"},
 		{"source", "json", "json"},
-		{"", nil, "<nil>"},
+		// An omitted metric arrives as a nil value; a blank cell says "not
+		// measured" where "<nil>" says the renderer broke and 0 would be a
+		// claim nobody measured.
+		{"", nil, ""},
 	}
 	for _, c := range cases {
 		if got := formatValue(c.value, c.unit); got != c.want {

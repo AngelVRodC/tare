@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/AngelVRodC/tare/internal/transcript"
 )
 
 // openCodeDBName is the file `--dir` is expected to contain.
@@ -90,21 +93,27 @@ func openCodeRows(out []byte) ([]openCodeToolRow, openCodeSpan, error) {
 // Unlike Boost, this is the command's only data source, so a missing sqlite3, a
 // missing database or an unreadable reply is an error rather than a degraded
 // envelope: there is nothing left to report.
-func openCodeRead(dir string) ([]openCodeToolRow, openCodeSpan, error) {
+// The size comes back from the same stat that proves the file is readable. A
+// second stat in the caller could fail on its own and leave a 0 in
+// Corpus.Bytes — an absent number rendered as a measured one, which is the
+// defect the rest of this file exists to prevent.
+func openCodeRead(dir string) (rows []openCodeToolRow, span openCodeSpan, dbSize int64, err error) {
 	bin, err := exec.LookPath("sqlite3")
 	if err != nil {
-		return nil, openCodeSpan{}, fmt.Errorf("sqlite3 is not on PATH and the opencode harness needs it to read %s: %w",
+		return nil, openCodeSpan{}, 0, fmt.Errorf("sqlite3 is not on PATH and the opencode harness needs it to read %s: %w",
 			openCodeDBName, err)
 	}
 	db := filepath.Join(dir, openCodeDBName)
-	if _, err := os.Stat(db); err != nil {
-		return nil, openCodeSpan{}, fmt.Errorf("opencode database not readable: %w", err)
+	fi, err := os.Stat(db)
+	if err != nil {
+		return nil, openCodeSpan{}, 0, fmt.Errorf("opencode database not readable: %w", err)
 	}
 	out, err := runCmd(bin, "-readonly", "-json", db, openCodeQuery)
 	if err != nil {
-		return nil, openCodeSpan{}, fmt.Errorf("opencode query failed (schema change or locked DB?): %w", err)
+		return nil, openCodeSpan{}, 0, fmt.Errorf("opencode query failed (schema change or locked DB?): %w", err)
 	}
-	return openCodeRows(out)
+	rows, span, err = openCodeRows(out)
+	return rows, span, fi.Size(), err
 }
 
 // openCodeServers reads the configured MCP server names out of opencode.json.
@@ -143,4 +152,145 @@ func splitOpenCodeMCP(name string, servers []string) (server, tool string, ok bo
 		}
 	}
 	return "", "", false
+}
+
+// openCodeConfigPath is where OpenCode keeps its MCP server list. It is not
+// under `--dir`: OpenCode splits data (`~/.local/share/opencode`) from config
+// (`~/.config/opencode`), so the database and the server names never share a
+// root. The fallback mirrors main.go's defaultDir — a relative path rather
+// than an error, because a missing home directory should cost the mcp_server
+// block and a warning, not the whole command.
+func openCodeConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".config", "opencode", "opencode.json")
+	}
+	return filepath.Join(home, ".config", "opencode", "opencode.json")
+}
+
+// openCodeTime renders one of OpenCode's 13-digit millisecond timestamps as
+// the RFC3339 string the builder's date range compares lexically. This is
+// formatting, not parsing, so the rule that this program parses no times
+// anywhere still holds.
+func openCodeTime(ms int64) string {
+	return time.UnixMilli(ms).UTC().Format(time.RFC3339)
+}
+
+// OpenCodeToolsEnvelope reads the OpenCode database and emits the same `tools`
+// envelope the Claude Code path emits — same command name, same metric names —
+// so RenderTools, WriteJSON and Validate work unchanged and the JSON contract
+// does not fork per harness.
+func OpenCodeToolsEnvelope(dir, version string) (Envelope, error) {
+	rows, span, dbSize, err := openCodeRead(dir)
+	if err != nil {
+		return Envelope{}, err
+	}
+	// A missing or unreadable config is not fatal here, unlike a missing
+	// database: it costs the mcp_server block and a warning, nothing else.
+	servers, serverErr := openCodeServers(openCodeConfigPath())
+	return openCodeEnvelope(dir, version, rows, span, servers, serverErr, dbSize), nil
+}
+
+// openCodeEnvelope is the arithmetic half, split from the shell-out exactly as
+// boostReportMetrics is, so the rollup→envelope contract is testable with no
+// sqlite3 on PATH.
+func openCodeEnvelope(dir, version string, rows []openCodeToolRow, span openCodeSpan,
+	servers []string, serverErr error, dbSize int64) Envelope {
+	b := newBuilder(dir, version, "tools")
+	// A zero span is an empty database, not midnight in 1970 — widening the
+	// range to the epoch would print a corpus that starts 56 years before the
+	// harness existed.
+	if span.MinMs != 0 {
+		b.seeTime(openCodeTime(span.MinMs))
+	}
+	if span.MaxMs != 0 {
+		b.seeTime(openCodeTime(span.MaxMs))
+	}
+
+	tools := map[string]*toolStat{}
+	byServer := map[string]*toolStat{}
+	// The keys whose error count sqlite3 returned as SQL NULL. sum() over a
+	// group where no row carries $.state.status has no non-NULL input, so the
+	// count is unrecorded — and a 0 there would be a `measured` claim that the
+	// tool never failed, which Envelope.Validate accepts unconditionally.
+	unknownTool := map[string]bool{}
+	unknownServer := map[string]bool{}
+	var totals toolStat
+	errorsKnown := true
+
+	// Not toolStat.add: the rollup already counted the calls inside sqlite3, so
+	// each row is a group total rather than one call.
+	accumulate := func(into *toolStat, r openCodeToolRow) {
+		into.Calls += r.Calls
+		into.ContextBytes += r.ContextBytes
+		if r.Errors != nil {
+			into.Errors += *r.Errors
+		}
+	}
+	for _, r := range rows {
+		accumulate(bucket(tools, r.Tool), r)
+		accumulate(&totals, r)
+		if r.Errors == nil {
+			unknownTool[r.Tool] = true
+			errorsKnown = false
+		}
+		// splitOpenCodeMCP matches nothing when the server list is empty, so a
+		// missing config yields no mcp_server rows by construction.
+		if server, _, ok := splitOpenCodeMCP(r.Tool, servers); ok {
+			accumulate(bucket(byServer, server), r)
+			if r.Errors == nil {
+				unknownServer[server] = true
+			}
+		}
+	}
+
+	b.add("distinct_tools", len(tools), "tools")
+	b.add("calls", totals.Calls, "calls")
+	b.add("context_bytes", totals.ContextBytes, "bytes")
+	// One unrecorded group makes the corpus total a floor, not a measurement.
+	if errorsKnown {
+		b.add("errors", totals.Errors, "calls")
+	}
+
+	const omitImages, omitProduced = "image_bytes", "produced_bytes"
+	b.rows(dropUnknownErrors(statMetrics("tool", tools, omitImages, omitProduced), unknownTool)...)
+	b.rows(dropUnknownErrors(statMetrics("mcp_server", byServer, omitImages, omitProduced), unknownServer)...)
+
+	b.warn("image_bytes and image_results are not reported for opencode: it stores a tool result as one output string with no image payload broken out, so the figure is unmeasured — it is not a measurement of zero")
+	b.warn("produced_bytes, externalised_results, externalised_produced_bytes and externalised_context_bytes are not reported for opencode: it records no pre-truncation output size and writes no side files, so what a tool produced before it reached the context is unmeasured — it is not a measurement of zero")
+	b.warn("tool_use_blocks, tool_result_blocks, unmatched_results and unanswered_uses are not reported for opencode: the call and its result share one row, so the join those counters audit does not exist here — they have no meaning rather than a value of zero")
+	if !errorsKnown {
+		// Three rows are withheld, so all three are named: warn's contract is
+		// that nothing is ever omitted silently, and naming one of three is
+		// the same silence with extra steps.
+		b.warn("errors is withheld for %s and from the corpus total: opencode recorded no call status on those rows, which is not a claim that the calls succeeded",
+			strings.Join(slices.Sorted(maps.Keys(unknownTool)), ", "))
+		if len(unknownServer) > 0 {
+			b.warn("errors is withheld from the mcp_server rows for %s for the same reason: a server inherits the unrecorded status of the tools it owns",
+				strings.Join(slices.Sorted(maps.Keys(unknownServer)), ", "))
+		}
+	}
+	// An opencode.json that parses but carries no `mcp` key produces the same
+	// missing block as no file at all, so it earns the same explanation.
+	if len(servers) == 0 {
+		reason := "it names no mcp servers"
+		if serverErr != nil {
+			reason = serverErr.Error()
+		}
+		b.warn("no mcp server list (%s): mcp_server rows are omitted, which is not a claim that no MCP server was used", reason)
+	}
+	b.warn("corpus bytes is the size of %s on disk, which includes indices and tables this command does not read — it is not comparable to a Claude Code corpus byte count", openCodeDBName)
+	// Files: 1 because the corpus is one database file. done needs no seam:
+	// it reads three fields, and a struct literal supplies all three.
+	return b.done(transcript.ScanStats{Files: 1, Bytes: dbSize})
+}
+
+// dropUnknownErrors removes the errors row for any key whose count came back as
+// SQL NULL. Leaving it in prints a 0 that Validate waves through as measured;
+// dropping it prints a blank cell, which is what "not recorded" looks like
+// everywhere else in this program.
+func dropUnknownErrors(rows []Metric, unknown map[string]bool) []Metric {
+	return slices.DeleteFunc(rows, func(m Metric) bool {
+		return m.Name == "errors" && unknown[m.Key]
+	})
 }

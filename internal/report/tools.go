@@ -162,10 +162,18 @@ func splitMCP(name string) (server, tool string, ok bool) {
 	return server, tool, true
 }
 
-// statMetrics emits five rows per key, heaviest context first, so the table
-// can group consecutive rows without re-sorting what the envelope already
-// ordered.
-func statMetrics(dimension string, stats map[string]*toolStat) []Metric {
+// statMetrics emits up to five rows per key, heaviest context first, so the
+// table can group consecutive rows without re-sorting what the envelope
+// already ordered.
+//
+// "Up to", because a name in omit is left out of the envelope entirely rather
+// than emitted as a zero. A harness that does not record image bytes has not
+// measured zero of them, and `measured` is the one derivation Validate accepts
+// unconditionally — so a zero row here would ship an over-claim that nothing
+// downstream can catch. RenderTools renders the absent metric as a blank cell.
+// omit is variadic so the two Claude Code call sites, which omit nothing, read
+// exactly as they did before.
+func statMetrics(dimension string, stats map[string]*toolStat, omit ...string) []Metric {
 	keys := slices.SortedFunc(maps.Keys(stats), func(a, b string) int {
 		return cmp.Or(
 			cmp.Compare(stats[b].ContextBytes, stats[a].ContextBytes),
@@ -174,13 +182,17 @@ func statMetrics(dimension string, stats map[string]*toolStat) []Metric {
 	out := make([]Metric, 0, len(keys)*5)
 	for _, k := range keys {
 		s := stats[k]
-		out = append(out,
+		for _, m := range [...]Metric{
 			MeasuredMetric("calls", dimension, k, s.Calls, "calls"),
 			MeasuredMetric("context_bytes", dimension, k, s.ContextBytes, "bytes"),
 			MeasuredMetric("image_bytes", dimension, k, s.ImageBytes, "bytes"),
 			MeasuredMetric("produced_bytes", dimension, k, s.ProducedBytes, "bytes"),
 			MeasuredMetric("errors", dimension, k, s.Errors, "calls"),
-		)
+		} {
+			if !slices.Contains(omit, m.Name) {
+				out = append(out, m)
+			}
+		}
 	}
 	return out
 }

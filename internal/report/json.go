@@ -124,10 +124,18 @@ func newBuilder(dir, version, command string) *builder {
 	}}
 }
 
-// see widens the corpus date range to include one event. RFC3339 sorts
-// lexically, so no time parsing happens anywhere in this program.
+// see widens the corpus date range to include one event.
 func (b *builder) see(ev *transcript.Event) {
-	ts := ev.Timestamp
+	b.seeTime(ev.Timestamp)
+}
+
+// seeTime widens the corpus date range to include one timestamp. RFC3339 sorts
+// lexically, so no time parsing happens anywhere in this program.
+//
+// Split out from see so a harness that has no transcript.Event — one whose
+// timestamps are integers it formats rather than lines it parses — can widen
+// the same range without inventing a second date-range implementation.
+func (b *builder) seeTime(ts string) {
 	if ts == "" {
 		return
 	}

@@ -396,3 +396,39 @@ func TestRenderAttributeReadsEnvelope(t *testing.T) {
 		}
 	}
 }
+
+// TestAbsentModelsCollapse pins the warning shape. A model billed in a session
+// the transcript never recorded is a real finding, but one line per session
+// reached ~50 rows on the real corpus and buried every other warning. One line,
+// a pair count, and the distinct model names — the per-session detail stays in
+// the coverage_ratio rows.
+func TestAbsentModelsCollapse(t *testing.T) {
+	env := attributeCorpus(t,
+		usageLine(t, "s1", "m1", "opus", tokens{in: 100, out: 10}, nil),
+		costLine(t, "s1", 1.0, map[string]transcript.ModelUsage{
+			"opus":     {Input: 100, Output: 10, CostUSD: 0.9},
+			"haiku-bg": {Input: 10, CostUSD: 0.1}}),
+		costLine(t, "s2", 0.5, map[string]transcript.ModelUsage{
+			"haiku-bg": {Input: 10, CostUSD: 0.5}}),
+		costLine(t, "s3", 0.5, map[string]transcript.ModelUsage{
+			"sonnet-bg": {Input: 5, CostUSD: 0.5}}),
+	)
+
+	var absent []string
+	for _, w := range env.Warnings {
+		if strings.Contains(w, "no transcript events") {
+			absent = append(absent, w)
+		}
+	}
+	if len(absent) != 1 {
+		t.Fatalf("want exactly one collapsed warning, got %d: %v", len(absent), absent)
+	}
+	for _, want := range []string{"3 billed session-model pairs", "haiku-bg", "sonnet-bg"} {
+		if !strings.Contains(absent[0], want) {
+			t.Errorf("warning %q does not name %q", absent[0], want)
+		}
+	}
+	if n := strings.Count(absent[0], "haiku-bg"); n != 1 {
+		t.Errorf("a model billed in two sessions must be named once, named %d times: %q", n, absent[0])
+	}
+}

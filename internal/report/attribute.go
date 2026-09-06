@@ -233,7 +233,9 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 			"%d of %d sessions carry no cost-state event: dollars are unavailable for them, not zero",
 			missing, len(sessions)))
 	}
-	env.Warnings = append(env.Warnings, absent...)
+	if absent != "" {
+		env.Warnings = append(env.Warnings, absent)
+	}
 	if scanStats.ParseErrors > 0 {
 		env.Warnings = append(env.Warnings,
 			fmt.Sprintf("%d lines failed to decode", scanStats.ParseErrors))
@@ -288,11 +290,16 @@ func compareDimKey(a, b dimKey) int {
 }
 
 // coverageMetrics compares each billed session-model against what the
-// transcript actually recorded for it, and names the models that were billed
-// with no transcript events at all.
+// transcript actually recorded for it. Session-models billed with no
+// transcript events collapse into a single warning naming the distinct
+// models: one line per session ran to ~50 rows on the real corpus and buried
+// every other finding, and the per-session detail is already carried by the
+// coverage_ratio rows.
 func coverageMetrics(costStates map[string]*transcript.CostState,
-	byModel map[sessionModel]*rebill) (rows []Metric, billed float64, absent []string) {
+	byModel map[sessionModel]*rebill) (rows []Metric, billed float64, absent string) {
 
+	absentPairs := 0
+	absentModels := map[string]bool{}
 	for _, session := range slices.Sorted(maps.Keys(costStates)) {
 		cs := costStates[session]
 		billed += cs.TotalCostUSD
@@ -303,9 +310,8 @@ func coverageMetrics(costStates map[string]*transcript.CostState,
 			if tr == nil {
 				rows = append(rows,
 					MeasuredMetric("coverage_ratio", "cost_coverage", key, 0.0, "ratio"))
-				absent = append(absent, fmt.Sprintf(
-					"model %q is billed in session %s but has no transcript events — billed work the transcript never recorded",
-					model, session))
+				absentPairs++
+				absentModels[model] = true
 				continue
 			}
 			rows = append(rows,
@@ -314,6 +320,11 @@ func coverageMetrics(costStates map[string]*transcript.CostState,
 				MeasuredMetric("transcript_tokens", "cost_coverage", key, tr.Tokens(), "tokens"),
 				MeasuredMetric("billed_tokens", "cost_coverage", key, mu.Tokens(), "tokens"))
 		}
+	}
+	if absentPairs > 0 {
+		absent = fmt.Sprintf(
+			"%d billed session-model pairs have no transcript events — billed work the transcript never recorded; models: %s",
+			absentPairs, strings.Join(slices.Sorted(maps.Keys(absentModels)), ", "))
 	}
 	return rows, billed, absent
 }

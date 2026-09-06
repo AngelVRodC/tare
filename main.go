@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -40,7 +41,10 @@ func run(args []string, out io.Writer) error {
 	}
 
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	// Discarded, not stderr: a parse failure is returned as an error and main
+	// prints it, and a help request is answered below on stdout. Letting the
+	// flag package also write its own copy would double every message.
+	fs.SetOutput(io.Discard)
 	dir := fs.String("dir", defaultDir(), "transcript root directory")
 	asJSON := fs.Bool("json", false, "emit the JSON envelope instead of a table")
 	// Registered only where it means something, so `tare scan --boost-deep`
@@ -51,6 +55,12 @@ func run(args []string, out io.Writer) error {
 			"join every Boost MCP call from its history DB via sqlite3, not the 100-row JSON sample")
 	}
 	if err := fs.Parse(args[1:]); err != nil {
+		// `tare scan --help` is the same request as `tare --help`, and gets the
+		// same answer: usage on stdout, exit 0. flag reports it as an error.
+		if errors.Is(err, flag.ErrHelp) {
+			usage(out)
+			return nil
+		}
 		return err
 	}
 

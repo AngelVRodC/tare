@@ -101,10 +101,13 @@ WebSearch                                                   296    829.7 kB  0 B
 Then `tare attribute` for the same volume rolled up by skill, plugin, agent and
 MCP server, and `tare report` for all of it in one artifact.
 
-The `SHARE` column is each tool's share of the corpus total for that table, and
-the marks grade it: `*` ≥5%, `**` ≥20%, `***` ≥35%, `!!` ≥50%. The grade is a
-rendering of the share, not a separate measurement — it is not in `--json`, and
-you can recompute it yourself from `context_bytes`.
+The `SHARE` column is each row's share of the corpus total, and the marks grade
+it: `*` ≥5%, `**` ≥20%, `***` ≥35%, `!!` ≥50%. `TOOL` partitions the corpus, so
+its shares sum to 100%; `MCP_SERVER` is a *subset* of those same tools, so its
+shares are of all context and sum to far less. A table whose every row would
+grade blank gets no `SHARE` column at all — the ranking already answers it. The
+grade is a rendering of the share, not a separate measurement: it is not in
+`--json`, and you can recompute it yourself from `context_bytes`.
 
 Every row still carries a `measured` / `estimated` derivation, but the table
 prints it as a column only where a block actually mixes the two. Where every

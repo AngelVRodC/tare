@@ -142,7 +142,9 @@ func RenderReport(w io.Writer, r Report, generated time.Time) error {
 	fmt.Fprintf(w, "| reproduce | `tare report --dir %s` |\n", env.Corpus.Dir)
 	fmt.Fprintf(w, "| machine-readable | `tare report --json --dir %s` |\n", env.Corpus.Dir)
 
-	fmt.Fprintf(w, "\nEvery row below is tagged `measured` or `estimated`; an estimated row names\n"+
+	fmt.Fprintf(w, "\nEvery row below carries a `measured` or `estimated` derivation. A block whose\n"+
+		"rows all agree says so once, in a footer under it; the column appears only\n"+
+		"where a block genuinely mixes the two. `--json` tags every row. An estimated row names\n"+
 		"the method it was derived by. See Derivations. The tables are capped at %d rows\n"+
 		"per dimension — `--json` carries all %s of them.\n",
 		tableRows, comma(int64(len(env.Metrics))))

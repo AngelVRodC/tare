@@ -242,9 +242,12 @@ func humanizeBytes(n int64) string {
 	if n < 1000 {
 		return comma(n) + " B"
 	}
+	// 999.95 rather than 1000: the value is printed rounded to one decimal, so
+	// testing the raw number here renders 999,999 B as "1000.0 kB" instead of
+	// promoting it to "1.0 MB".
 	f, unit := float64(n)/1000, "kB"
 	for _, next := range []string{"MB", "GB", "TB"} {
-		if f < 1000 {
+		if f < 999.95 {
 			break
 		}
 		f, unit = f/1000, next
@@ -263,14 +266,16 @@ func formatUSD(n float64) string {
 	return "$" + strconv.FormatFloat(n, 'f', 2, 64)
 }
 
-// formatRatio renders the two quantities that share the ratio unit. A
-// coverage_ratio is a fraction of one and reads as 0.52; a rebill_multiplier
-// is a multiple and reads as 28×. Formatting every ratio as an integer
-// multiple would round all 140 coverage rows to 0× and say nothing at all.
+// formatRatio renders a ratio as the multiple it is, always carrying the ×.
+// Precision scales instead of the unit: rebill_multiplier spans 0 to 17,070 in
+// one column, and a rebill_multiplier below 1 is real — a skill whose responses
+// re-read less context than they send. Rounding those to an integer prints 0×
+// and deletes them; dropping the × on them instead makes the column change unit
+// system between two adjacent rows, which is worse.
 func formatRatio(n float64) string {
 	switch {
-	case n <= 1:
-		return strconv.FormatFloat(n, 'f', 2, 64)
+	case n < 1:
+		return strconv.FormatFloat(n, 'f', 2, 64) + "×"
 	case n < 10:
 		return strconv.FormatFloat(n, 'f', 1, 64) + "×"
 	default:

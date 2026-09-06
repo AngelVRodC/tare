@@ -31,11 +31,12 @@ func TestFormatValueByUnit(t *testing.T) {
 		{"usd", 0.0000149, "$0.0000149"},
 		{"usd", 0.0, "$0.00"},
 
-		// ratio carries two different quantities. coverage_ratio never exceeds
-		// 1 and reads as a fraction; rebill_multiplier reads as a multiple.
-		{"ratio", 0.5169169885527817, "0.52"},
-		{"ratio", 1.0, "1.00"},
-		{"ratio", 0.0, "0.00"},
+		// ratio always carries the ×; only the precision scales. A
+		// rebill_multiplier below 1 is real and must survive rounding.
+		{"ratio", 0.5169169885527817, "0.52×"},
+		{"ratio", 0.664, "0.66×"},
+		{"ratio", 1.0, "1.0×"},
+		{"ratio", 0.0, "0.00×"},
 		{"ratio", 2.7, "2.7×"},
 		{"ratio", 28.1045, "28×"},
 		{"ratio", 17070.5, "17,071×"},
@@ -66,15 +67,33 @@ func TestHumanizeBytesIsSI(t *testing.T) {
 		want string
 	}{
 		{0, "0 B"},
-		{999, "999 B"},   // the B/kB boundary, below
-		{1000, "1.0 kB"}, // and above
-		{999999, "1000.0 kB"},
+		{999, "999 B"},     // the B/kB boundary, below
+		{1000, "1.0 kB"},   // and above
+		{999999, "1.0 MB"}, // promotes on the rounded value, not the raw one
 		{1000000, "1.0 MB"},
 		{1500000000, "1.5 GB"},
 		{2000000000000, "2.0 TB"},
 		{-1500, "-1.5 kB"},
 	}
 	for _, c := range cases {
+		if got := humanizeBytes(c.in); got != c.want {
+			t.Errorf("humanizeBytes(%d) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestHumanizeBytesPromotesOnRoundedValue guards the boundary the scale loop
+// gets wrong if it tests the raw quotient: 999,999 B is 999.999 kB, which
+// prints as "1000.0 kB" unless it is promoted first.
+func TestHumanizeBytesPromotesOnRoundedValue(t *testing.T) {
+	for _, c := range []struct {
+		in   int64
+		want string
+	}{
+		{999949, "999.9 kB"}, // rounds to 999.9 — stays kB
+		{999950, "1.0 MB"},   // rounds to 1000.0 — promotes
+		{999999999, "1.0 GB"},
+	} {
 		if got := humanizeBytes(c.in); got != c.want {
 			t.Errorf("humanizeBytes(%d) = %q, want %q", c.in, got, c.want)
 		}

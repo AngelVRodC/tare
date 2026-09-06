@@ -43,3 +43,18 @@ func TestLeadingFlagSaysOrder(t *testing.T) {
 		t.Errorf("run([tool]) error is %v, want unknown command", err)
 	}
 }
+
+// TestPerCommandHelpAlsoExitsZero covers the half of the convention the first
+// pass missed: flag reports --help as an error, so `tare scan --help` exited 1
+// to stderr while `tare --help` exited 0 to stdout.
+func TestPerCommandHelpAlsoExitsZero(t *testing.T) {
+	for _, args := range [][]string{{"scan", "--help"}, {"tools", "-h"}, {"corruption", "--help"}} {
+		var buf bytes.Buffer
+		if err := run(args, &buf); err != nil {
+			t.Errorf("run(%v) returned %v, want nil", args, err)
+		}
+		if !strings.Contains(buf.String(), "usage: tare <command>") {
+			t.Errorf("run(%v) printed no usage to stdout:\n%s", args, buf.String())
+		}
+	}
+}

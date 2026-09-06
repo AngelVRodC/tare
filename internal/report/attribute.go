@@ -419,13 +419,15 @@ func RenderAttribute(w io.Writer, env Envelope) error {
 		if len(rows) == 0 {
 			continue
 		}
-		// Only attachment_type partitions attachment_bytes. The other five
-		// dimensions are sub-rollups inside a single attachment type — MCP_TOOL
-		// covers 0.3% of all attachment bytes — so a share of the corpus total
-		// would print 0.0% on every row and say nothing at all.
-		whole, header := int64(0), ""
-		if dim == "attachment_type" {
-			whole, header = attachments, "SHARE"
+		// Not every attachment dimension partitions attachment_bytes: three of
+		// the six are sub-rollups whose largest row is under half a percent of
+		// it, and there the column would print 0.0% on every row and deliver no
+		// verdict — the same defect the uniform derivation column had. Measured
+		// rather than listed by name, so this follows the corpus instead of the
+		// one it was written against.
+		whole, header := attachments, "SHARE"
+		if !gradeable(rows, "attachment_bytes", whole) {
+			whole, header = 0, ""
 		}
 		fmt.Fprintf(tw, "\n%s\tEVENTS\tBYTES\t%s\t\t\n", strings.ToUpper(dim), header)
 		shown, withheld := truncate(rows)
@@ -439,6 +441,18 @@ func RenderAttribute(w io.Writer, env Envelope) error {
 		writeWithheld(tw, withheld, dim)
 	}
 	return renderTail(w, tw, env)
+}
+
+// gradeable reports whether any row of a table is a large enough slice of the
+// corpus to earn a concern mark. A SHARE column whose every row grades blank
+// answers nothing the ranking has not already answered.
+func gradeable(rows []row, name string, whole int64) bool {
+	for _, r := range rows {
+		if concern(percent(r.num(name), whole)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func writeRebillTable(tw io.Writer, env Envelope, dimension string) {

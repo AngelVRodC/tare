@@ -110,7 +110,21 @@ func openCodeRead(dir string) (rows []openCodeToolRow, span openCodeSpan, dbSize
 	}
 	out, err := runCmd(bin, "-readonly", "-json", db, openCodeQuery)
 	if err != nil {
-		return nil, openCodeSpan{}, 0, fmt.Errorf("opencode query failed (schema change or locked DB?): %w", err)
+		// Which cause gets named is decided by a stat, not by guessing: telling a
+		// user to recreate a file already sitting beside their database is the
+		// same over-claim this file exists to prevent. Measured: opencode writes
+		// in WAL mode, and a -readonly open fails with error 14 when -shm is
+		// absent — the normal state once every connection has closed.
+		//
+		// `file:...?immutable=1` opens in both states and is deliberately not
+		// used: it ignores the WAL, trading a loud failure for a stale number.
+		cause := "a schema change, or the database is locked by another process"
+		if _, statErr := os.Stat(db + "-shm"); os.IsNotExist(statErr) {
+			cause = fmt.Sprintf("the %[1]s-shm sidecar is missing, and opencode writes %[1]s in WAL mode, "+
+				"where a read-only open needs it — start opencode once to recreate it, or copy %[1]s together "+
+				"with its -wal and -shm files and point --dir at the copy", openCodeDBName)
+		}
+		return nil, openCodeSpan{}, 0, fmt.Errorf("opencode query failed: %s: %w", cause, err)
 	}
 	rows, span, err = openCodeRows(out)
 	return rows, span, fi.Size(), err

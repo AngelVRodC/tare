@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -84,5 +85,109 @@ func TestPerCommandHelpAlsoExitsZero(t *testing.T) {
 		if !strings.Contains(buf.String(), "usage: tare <command>") {
 			t.Errorf("run(%v) printed no usage to stdout:\n%s", args, buf.String())
 		}
+	}
+}
+
+// TestHarnessFlagRejectedOnOtherCommands is the --boost-deep rule applied to
+// --harness: `tools` is the one command a second harness supplies, so naming it
+// anywhere else has to be an error rather than a flag that reads Claude Code
+// and says nothing.
+//
+// It asserts the parse error specifically, not merely err != nil: dropping the
+// registration guard makes `scan --harness opencode` resolve --dir to the
+// OpenCode root, which errors on its own wherever that directory is absent. A
+// bare nil-check would then pass on a machine without OpenCode installed and
+// fail to catch the mutation on one that has it.
+func TestHarnessFlagRejectedOnOtherCommands(t *testing.T) {
+	for _, cmd := range []string{"scan", "attribute", "corruption", "report"} {
+		var buf bytes.Buffer
+		err := run([]string{cmd, "--harness", "opencode"}, &buf)
+		if err == nil {
+			t.Errorf("run([%s --harness opencode]) returned nil, want an error — the flag means nothing there", cmd)
+			continue
+		}
+		if !strings.Contains(err.Error(), "not defined") {
+			t.Errorf("run([%s --harness opencode]) failed with %q, want the flag to be undefined there", cmd, err)
+		}
+	}
+}
+
+// TestUnknownHarnessErrors pins that a misspelling is rejected before any
+// corpus is read, and that the message names what would have worked. `codex` is
+// the case that matters: it is a real harness tare does not read yet, so the
+// error has to say which two it does.
+func TestUnknownHarnessErrors(t *testing.T) {
+	var buf bytes.Buffer
+	err := run([]string{"tools", "--harness", "codex"}, &buf)
+	if err == nil {
+		t.Fatal("run([tools --harness codex]) returned nil, want an error")
+	}
+	for _, want := range []string{harnessClaudeCode, harnessOpenCode} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error is %q, want it to name the valid value %q", err, want)
+		}
+	}
+	if buf.Len() != 0 {
+		t.Errorf("an unknown harness wrote %d bytes to stdout, want none", buf.Len())
+	}
+}
+
+// TestDefaultDirPerHarness covers the trap the --dir default became once it
+// depended on a flag parsed in the same pass: registered as "" and resolved
+// afterwards, so a resolution that silently returned "" would read the working
+// directory instead of the harness's own root.
+func TestDefaultDirPerHarness(t *testing.T) {
+	for _, tc := range []struct{ harness, suffix string }{
+		{harnessClaudeCode, filepath.Join(".claude", "projects")},
+		{harnessOpenCode, filepath.Join(".local", "share", "opencode")},
+	} {
+		got, err := resolveDir(tc.harness, "")
+		if err != nil {
+			t.Fatalf("resolveDir(%q, \"\") returned %v, want nil", tc.harness, err)
+		}
+		if !strings.HasSuffix(got, tc.suffix) {
+			t.Errorf("resolveDir(%q, \"\") = %q, want it to end in %q", tc.harness, got, tc.suffix)
+		}
+	}
+
+	// An explicit --dir wins over both defaults, which is what every QA run
+	// against a frozen corpus copy depends on.
+	for _, harness := range []string{harnessClaudeCode, harnessOpenCode} {
+		got, err := resolveDir(harness, "/somewhere/else")
+		if err != nil || got != "/somewhere/else" {
+			t.Errorf("resolveDir(%q, /somewhere/else) = %q, %v — want the flag to win", harness, got, err)
+		}
+	}
+
+	if _, err := resolveDir("codex", "/somewhere/else"); err == nil {
+		t.Error("resolveDir rejected nothing for an unknown harness with --dir set")
+	}
+}
+
+// TestHarnessSelectsTheReader is the only check that --harness opencode reaches
+// OpenCodeToolsEnvelope at all. Without it, replacing the dispatch branch with
+// report.ToolsEnvelope prints a Claude Code table under an OpenCode header,
+// exits 0, and every package still passes — the resolveDir and unknown-value
+// tests both pass on a mutant that never calls the OpenCode reader.
+//
+// An empty directory is the discriminator, so this needs no sqlite3 and no
+// fixture: the Claude Code reader treats an empty transcript root as an empty
+// corpus, while the OpenCode reader has a required file and says the database
+// is not readable.
+func TestHarnessSelectsTheReader(t *testing.T) {
+	empty := t.TempDir()
+
+	var buf bytes.Buffer
+	if err := run([]string{"tools", "--dir", empty}, &buf); err != nil {
+		t.Fatalf("claude-code over an empty dir returned %v, want nil — the discriminator this test relies on is gone", err)
+	}
+
+	buf.Reset()
+	err := run([]string{"tools", "--harness", "opencode", "--dir", empty}, &buf)
+	if err == nil {
+		t.Fatal("opencode over an empty dir returned nil — the dispatch read the Claude Code corpus instead")
+	}
+	if !strings.Contains(err.Error(), "opencode database not readable") {
+		t.Errorf("error is %q, want the OpenCode reader's own missing-database message", err)
 	}
 }

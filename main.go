@@ -1,5 +1,6 @@
 // Command tare reports which installed tooling actually costs context, read
-// from local Claude Code transcripts. Zero dependencies, no network.
+// from local agent transcripts — Claude Code by default, OpenCode behind
+// `tools --harness opencode`. Zero dependencies, no network.
 package main
 
 import (
@@ -23,6 +24,13 @@ const version = "0.1.0"
 // terminal convenience the CLI decides: the renderers obey whatever they are
 // handed, and `tare report` hands them nothing at all.
 const defaultTop = 15
+
+// The harnesses --harness accepts. Two values are not a registry: each names a
+// reader that already exists, and neither is reachable through an interface.
+const (
+	harnessClaudeCode = "claude-code"
+	harnessOpenCode   = "opencode"
+)
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
@@ -51,10 +59,20 @@ func run(args []string, out io.Writer) error {
 	// prints it, and a help request is answered below on stdout. Letting the
 	// flag package also write its own copy would double every message.
 	fs.SetOutput(io.Discard)
-	dir := fs.String("dir", defaultDir(), "transcript root directory")
+	// Empty, not defaultDir(): the default depends on --harness, parsed in the
+	// same pass. resolveDir applies it after. usage() carries it for the user.
+	dirFlag := fs.String("dir", "", "transcript root")
 	asJSON := fs.Bool("json", false, "emit the JSON envelope instead of a table")
-	// Registered only where it means something, so `tare scan --boost-deep`
-	// is an error rather than a flag that silently does nothing.
+	// Registered only where it means something, so `tare scan --harness
+	// opencode` is an error rather than a flag that silently does nothing:
+	// `tools` is the one command a second harness supplies.
+	harness := harnessClaudeCode
+	if cmd == "tools" {
+		fs.StringVar(&harness, "harness", harnessClaudeCode,
+			"which harness's transcripts to read: "+harnessClaudeCode+" or "+harnessOpenCode)
+	}
+	// Same rule, so `tare scan --boost-deep` is an error rather than a flag
+	// that silently does nothing.
 	var deep bool
 	if cmd == "corruption" {
 		fs.BoolVar(&deep, "boost-deep", false,
@@ -86,10 +104,17 @@ func run(args []string, out io.Writer) error {
 	if all {
 		top = 0
 	}
+	// After the parse, because the default --dir depends on --harness and both
+	// arrive in the same pass. An unknown harness is rejected here, before any
+	// command reads a corpus.
+	dir, err := resolveDir(harness, *dirFlag)
+	if err != nil {
+		return err
+	}
 
 	switch cmd {
 	case "scan":
-		env, err := report.ScanEnvelope(*dir, version)
+		env, err := report.ScanEnvelope(dir, version)
 		if err != nil {
 			return err
 		}
@@ -98,7 +123,13 @@ func run(args []string, out io.Writer) error {
 		}
 		return report.RenderScan(out, env)
 	case "tools":
-		env, err := report.ToolsEnvelope(*dir, version)
+		// Both adapters return the same envelope for the same command name, so
+		// only the reader differs — RenderTools and WriteJSON are shared.
+		toolsEnvelope := report.ToolsEnvelope
+		if harness == harnessOpenCode {
+			toolsEnvelope = report.OpenCodeToolsEnvelope
+		}
+		env, err := toolsEnvelope(dir, version)
 		if err != nil {
 			return err
 		}
@@ -107,7 +138,7 @@ func run(args []string, out io.Writer) error {
 		}
 		return report.RenderTools(out, env)
 	case "attribute":
-		env, err := report.AttributeEnvelope(*dir, version)
+		env, err := report.AttributeEnvelope(dir, version)
 		if err != nil {
 			return err
 		}
@@ -116,7 +147,7 @@ func run(args []string, out io.Writer) error {
 		}
 		return report.RenderAttribute(out, env, top)
 	case "corruption":
-		env, err := report.CorruptionEnvelope(*dir, version, deep)
+		env, err := report.CorruptionEnvelope(dir, version, deep)
 		if err != nil {
 			return err
 		}
@@ -136,7 +167,7 @@ func run(args []string, out io.Writer) error {
 		if isTTY() {
 			progress = os.Stderr
 		}
-		rep, err := report.BuildReport(*dir, version, progress)
+		rep, err := report.BuildReport(dir, version, progress)
 		if err != nil {
 			return err
 		}
@@ -189,8 +220,42 @@ func defaultDir() string {
 	return filepath.Join(home, ".claude", "projects")
 }
 
+// defaultOpenCodeDir is where OpenCode keeps opencode.db. The fallback mirrors
+// defaultDir exactly: a relative path rather than an error, so a missing home
+// directory produces a "database not readable" message naming a path the user
+// can see, not a failure before the command starts.
+func defaultOpenCodeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".local", "share", "opencode")
+	}
+	return filepath.Join(home, ".local", "share", "opencode")
+}
+
+// resolveDir applies the per-harness default to an unset --dir and rejects an
+// unknown harness. Split out of run so both are checked without reading a
+// corpus, which is also what keeps the test for them fast.
+func resolveDir(harness, dir string) (string, error) {
+	var byHarness func() string
+	switch harness {
+	case harnessClaudeCode:
+		byHarness = defaultDir
+	case harnessOpenCode:
+		byHarness = defaultOpenCodeDir
+	default:
+		return "", fmt.Errorf("unknown --harness %q: valid values are %s and %s",
+			harness, harnessClaudeCode, harnessOpenCode)
+	}
+	// An explicit --dir wins over both defaults, and is validated by whichever
+	// reader gets handed it rather than here.
+	if dir != "" {
+		return dir, nil
+	}
+	return byHarness(), nil
+}
+
 func usage(w io.Writer) {
-	fmt.Fprint(w, `tare — what your tooling costs, measured from local Claude Code transcripts.
+	fmt.Fprint(w, `tare — what your tooling costs, measured from local agent transcripts.
 
 usage: tare <command> [flags]
 
@@ -202,8 +267,9 @@ commands:
   report     all four composed into one reproducible artifact (Markdown, or --json)
 
 flags (given after the command):
-  --dir string   transcript root (default ~/.claude/projects)
+  --dir string   transcript root (default ~/.claude/projects; ~/.local/share/opencode with --harness opencode)
   --json         emit the JSON envelope instead of a table
+  --harness NAME tools only: which harness to read, claude-code (default) or opencode
   --boost-deep   corruption only: join every Boost MCP call, not the 100-row sample
   --top N        attribute, corruption only: rows per dimension (default 15, 0 for every row)
   --all          attribute, corruption only: same as --top 0

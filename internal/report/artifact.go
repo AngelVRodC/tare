@@ -1,6 +1,7 @@
 package report
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"maps"
@@ -157,6 +158,20 @@ func RenderReport(w io.Writer, r Report, generated time.Time) error {
 	fmt.Fprintf(w, "| reproduce | `tare report --dir %s` |\n", env.Corpus.Dir)
 	fmt.Fprintf(w, "| machine-readable | `tare report --json --dir %s` |\n", env.Corpus.Dir)
 
+	// Ahead of the preamble, not after it: the preamble is a legend — how to
+	// read the tables — and a reader who stops after the first screen should
+	// leave with the finding rather than with the instructions for finding it.
+	fmt.Fprint(w, "\n## Summary\n\n")
+	lines := summary(env)
+	if len(lines) == 0 {
+		// Consistent with Warnings and with the rest of this codebase: an
+		// absent number is said out loud, never printed as a zero.
+		fmt.Fprint(w, "None available: the envelope carries no corpus-wide rows.\n")
+	}
+	for _, line := range lines {
+		fmt.Fprintln(w, line)
+	}
+
 	fmt.Fprintf(w, "\nEvery row below carries a `measured` or `estimated` derivation. A block whose\n"+
 		"rows all agree says so once, in a footer under it; the column appears only\n"+
 		"where a block genuinely mixes the two. `--json` tags every row. An estimated row names\n"+
@@ -170,16 +185,19 @@ func RenderReport(w io.Writer, r Report, generated time.Time) error {
 		env    Envelope
 		render func(io.Writer, Envelope) error
 	}{
-		{"Corpus inventory", r.Scan, RenderScan},
+		// Findings first, in the order the Summary states them. A cap of 0
+		// truncates nothing: truncation is a terminal convenience and this
+		// document is a file by definition. Only the two renderers that
+		// truncate take the cap, and a closure carries it so the other two
+		// keep a signature with no parameter they would ignore.
 		{"Per-tool byte attribution", r.Tools, RenderTools},
-		// A cap of 0 truncates nothing: truncation is a terminal convenience
-		// and this document is a file by definition. Only the two renderers
-		// that truncate take the cap, and a closure carries it so the other
-		// two keep a signature with no parameter they would ignore.
 		{"Token attribution and context re-billing", r.Attribute,
 			func(w io.Writer, e Envelope) error { return RenderAttribute(w, e, 0) }},
 		{"Corruption detection", r.Corruption,
 			func(w io.Writer, e Envelope) error { return RenderCorruption(w, e, 0) }},
+		// Demoted below the three findings: it answers "what was read", which
+		// is provenance a reader checks after being told what was found.
+		{"Corpus inventory", r.Scan, RenderScan},
 	} {
 		fmt.Fprintf(w, "\n## %s — `tare %s`\n\n```text\n", sec.title, sec.env.Command)
 		if err := sec.render(w, sec.env); err != nil {
@@ -188,6 +206,17 @@ func RenderReport(w io.Writer, r Report, generated time.Time) error {
 		fmt.Fprint(w, "```\n")
 	}
 
+	fmt.Fprint(w, "\n## Warnings\n\n")
+	if len(env.Warnings) == 0 {
+		fmt.Fprint(w, "None.\n")
+	}
+	for _, warn := range env.Warnings {
+		fmt.Fprintf(w, "- %s\n", warn)
+	}
+
+	// Last, because it is an appendix: ninety rows of per-metric bookkeeping
+	// nobody reads top-down, kept because the derivation of every figure above
+	// has to be checkable somewhere.
 	fmt.Fprint(w, "\n## Derivations\n\n| metric | derivation | method | rows |\n| --- | --- | --- | --- |\n")
 	for _, d := range derivations(env.Metrics) {
 		method := d.key.method
@@ -196,16 +225,131 @@ func RenderReport(w io.Writer, r Report, generated time.Time) error {
 		}
 		fmt.Fprintf(w, "| %s | %s | %s | %d |\n", d.key.name, d.key.derivation, method, d.rows)
 	}
-
-	fmt.Fprint(w, "\n## Warnings\n\n")
-	if len(env.Warnings) == 0 {
-		fmt.Fprint(w, "None.\n")
-		return nil
-	}
-	for _, warn := range env.Warnings {
-		fmt.Fprintf(w, "- %s\n", warn)
-	}
 	return nil
+}
+
+// summary is the headline block: at most six lines, each one a figure a reader
+// of `--json` can check for themselves.
+//
+// Two rules shape it. First, no number in this document may exist only here —
+// so a line is either one row read straight off the envelope, or a ratio of
+// named rows, and a derived line names the rows it divided so the arithmetic is
+// reproducible from `--json`. A figure the envelope cannot corroborate is not
+// printed at all.
+//
+// Second, it must be deterministic. TestReportMarkdownVariesOnlyByTimestamp
+// allows exactly one differing line between two renders of one report, so the
+// top-3 is sorted by a total order (context descending, then key) rather than
+// trusted to arrive pre-sorted, and the three rows are summed as int64. Summing
+// floats over a Go map range is the defect that test was written to catch.
+//
+// It reads the merged envelope rather than the four section envelopes on
+// purpose: the merged one is exactly what `tare report --json` prints, so
+// "corroborable from the JSON" is literal rather than approximate.
+func summary(env Envelope) []string {
+	out := make([]string, 0, 6)
+
+	// Tool concentration. A sum of three rows, so the line names all three.
+	if whole := corpusValue(env, "context_bytes"); whole > 0 {
+		rows := groupRows(env.Metrics, "tool")
+		slices.SortFunc(rows, func(a, b row) int {
+			return cmp.Or(
+				cmp.Compare(b.num("context_bytes"), a.num("context_bytes")),
+				strings.Compare(a.key, b.key))
+		})
+		rows = rows[:min(3, len(rows))]
+		var part int64
+		keys := make([]string, 0, len(rows))
+		for _, r := range rows {
+			part += r.num("context_bytes")
+			keys = append(keys, "`"+r.key+"`")
+		}
+		if len(keys) > 0 {
+			out = append(out, fmt.Sprintf(
+				"- **Tool concentration** — %s together return %s of every byte tools put into context "+
+					"(their `context_bytes` rows at dimension `tool`, over corpus `context_bytes`).",
+				strings.Join(keys, ", "), formatValue(percent(part, whole), "percent")))
+		}
+	}
+
+	// The four single-row lines. Each is one envelope row, printed by the same
+	// formatter the tables use, so the Summary and the section cannot disagree.
+	if m, ok := corpusMetric(env, "rebill_multiplier"); ok {
+		out = append(out, fmt.Sprintf(
+			"- **Context re-billing** — the corpus re-billed %s as many tokens as it sent fresh "+
+				"(corpus `rebill_multiplier`).", formatValue(m.Value, m.Unit)))
+	}
+	if m, ok := corpusMetric(env, "duplicate_rate_percent"); ok {
+		out = append(out, fmt.Sprintf(
+			"- **Response duplication** — %s of assistant responses repeat a message already counted "+
+				"(corpus `duplicate_rate_percent`).", formatValue(m.Value, m.Unit)))
+	}
+	if m, ok := corpusMetric(env, "attachment_share_percent"); ok {
+		out = append(out, fmt.Sprintf(
+			"- **Attachment share** — attachments are %s of the corpus on disk "+
+				"(corpus `attachment_share_percent`).", formatValue(m.Value, m.Unit)))
+	}
+	// Both halves or neither: the allocated figure alone reads as the total
+	// spend, which is the one thing it is not.
+	alloc, haveAlloc := corpusMetric(env, "allocated_cost_usd")
+	unalloc, haveUnalloc := corpusMetric(env, "unallocated_cost_usd")
+	if haveAlloc && haveUnalloc {
+		out = append(out, fmt.Sprintf(
+			"- **Measured spend** — %s allocated to a dimension, %s billed with no events to allocate it across "+
+				"(corpus `allocated_cost_usd`, `unallocated_cost_usd`).",
+			formatValue(alloc.Value, alloc.Unit), formatValue(unalloc.Value, unalloc.Unit)))
+	}
+
+	// Attribution coverage, reported for the thinnest dimension because the
+	// most-unclaimed one is the bound on every dollar figure below it. Phase 2
+	// deliberately added no metric row for this share, so it is derived here
+	// from the two rows the line names.
+	if whole := corpusValue(env, "rebilled_tokens"); whole > 0 {
+		if dim, part, ok := thinnestAttribution(env); ok {
+			out = append(out, fmt.Sprintf(
+				"- **Attribution coverage** — `%s` holds %s of `%s` re-billed tokens, the thinnest of the five "+
+					"dimensions; the dollars beside its named rows are floors "+
+					"(`rebilled_tokens` at `%s`/`%s`, over corpus `rebilled_tokens`).",
+				unattributedKey, formatValue(percent(part, whole), "percent"), dim, dim, unattributedKey))
+		}
+	}
+	return out
+}
+
+// corpusMetric reads one keyless corpus-wide row whole, and says whether it is
+// there at all. corpusValue coerces to int64, which would silently render a
+// ratio, a percentage or a dollar figure as 0 — and every Summary line but two
+// is a float.
+func corpusMetric(env Envelope, name string) (Metric, bool) {
+	for _, m := range env.Metrics {
+		if m.Dimension == "corpus" && m.Name == name {
+			return m, true
+		}
+	}
+	return Metric{}, false
+}
+
+// thinnestAttribution names the attribution dimension whose `(unattributed)`
+// row holds the most re-billed tokens.
+//
+// attributionDims is ranged in declaration order — the order the tables
+// themselves print in — and the comparison is strict, so a tie resolves to the
+// first-declared dimension and the Summary line is byte-identical run to run.
+// sessionDim is not among them by construction: its key is the raw session id
+// and never the sentinel.
+func thinnestAttribution(env Envelope) (dimension string, rebilled int64, ok bool) {
+	unclaimed := map[string]int64{}
+	for _, m := range env.Metrics {
+		if m.Name == "rebilled_tokens" && m.Key == unattributedKey {
+			unclaimed[m.Dimension] = asInt64(m.Value)
+		}
+	}
+	for _, d := range attributionDims {
+		if v := unclaimed[d.name]; v > rebilled {
+			dimension, rebilled = d.name, v
+		}
+	}
+	return dimension, rebilled, dimension != ""
 }
 
 // cliVersions lists the Claude Code versions the corpus was written by.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -244,6 +245,112 @@ func TestReportHeaderIsSelfContained(t *testing.T) {
 	for _, cmd := range []string{"scan", "tools", "attribute", "corruption"} {
 		if !strings.Contains(out, "— `tare "+cmd+"`") {
 			t.Errorf("report has no %s section", cmd)
+		}
+	}
+}
+
+// summaryFixture is a merged-shaped envelope carrying exactly the rows the
+// Summary block reads, built by hand rather than from reportCorpus: that
+// fixture writes usage lines only, so it has no `tool` rows at all and four of
+// the six Summary lines would never render.
+//
+// The tool rows arrive out of context order and two of them tie at 100 bytes,
+// so the top-3 exercises both the sort and its tiebreak on the key: Bash 500,
+// Read 200, then Edit before Grep on the name.
+func summaryFixture() Envelope {
+	metrics := []Metric{
+		MeasuredMetric("context_bytes", "corpus", "", int64(1_000), "bytes"),
+		MeasuredMetric("rebilled_tokens", "corpus", "", int64(1_000), "tokens"),
+		MeasuredMetric("rebill_multiplier", "corpus", "", 4.5, "ratio"),
+		MeasuredMetric("duplicate_rate_percent", "corpus", "", 12.5, "percent"),
+		MeasuredMetric("attachment_share_percent", "corpus", "", 7.5, "percent"),
+		EstimatedMetric("allocated_cost_usd", "corpus", "", 12.34, "usd", AllocationMethod),
+		EstimatedMetric("unallocated_cost_usd", "corpus", "", 5.66, "usd", AllocationMethod),
+	}
+	for _, t := range []struct {
+		key   string
+		bytes int64
+	}{{"Grep", 100}, {"Bash", 500}, {"Write", 50}, {"Read", 200}, {"Edit", 100}} {
+		metrics = append(metrics, MeasuredMetric("context_bytes", "tool", t.key, t.bytes, "bytes"))
+	}
+	for _, u := range []struct {
+		dimension string
+		rebilled  int64
+	}{{"attribution_skill", 400}, {"attribution_plugin", 900}, {"attribution_agent", 100}} {
+		metrics = append(metrics,
+			MeasuredMetric("rebilled_tokens", u.dimension, "(unattributed)", u.rebilled, "tokens"))
+	}
+	return Envelope{Tool: "tare", Version: "test", Command: "report", Metrics: metrics}
+}
+
+// TestReportSummaryCitesEnvelopeOnly is the rule the Summary block exists
+// under: no number in this document may exist only here. A headline figure the
+// `--json` envelope cannot corroborate is the failure mode this whole command
+// was written against — the reader would have no way to tell which of the two
+// outputs was wrong.
+//
+// So every figure must be either a row rendered verbatim, or a ratio whose line
+// names the rows it divided. The citation half cannot check the arithmetic of a
+// derived line, only that it is declared, so the two derived figures are also
+// pinned to their expected values below.
+func TestReportSummaryCitesEnvelopeOnly(t *testing.T) {
+	env := summaryFixture()
+	var buf bytes.Buffer
+	if err := RenderReport(&buf, Report{Tools: env, Attribute: env, Envelope: env},
+		time.Unix(0, 0).UTC()); err != nil {
+		t.Fatalf("RenderReport: %v", err)
+	}
+
+	const head = "## Summary\n\n"
+	i := strings.Index(buf.String(), head)
+	if i < 0 {
+		t.Fatal("the report has no ## Summary section")
+	}
+	var lines []string
+	for _, line := range strings.Split(buf.String()[i+len(head):], "\n") {
+		if line == "" { // the block ends at the blank line before the preamble
+			break
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) != 6 {
+		t.Fatalf("the Summary is %d lines, want the six the fixture carries: %v", len(lines), lines)
+	}
+
+	// What the envelope can corroborate: every row's rendered value, and every
+	// name, dimension and key a line is allowed to cite.
+	rendered := map[string]bool{}
+	cited := map[string]bool{}
+	for _, m := range env.Metrics {
+		rendered[formatValue(m.Value, m.Unit)] = true
+		cited[m.Name], cited[m.Dimension], cited[m.Key] = true, true, true
+	}
+
+	figure := regexp.MustCompile(`\$?[0-9][0-9,]*(?:\.[0-9]+)?[%×]?`)
+	backticked := regexp.MustCompile("`([^`]+)`")
+	for _, line := range lines {
+		for _, m := range backticked.FindAllStringSubmatch(line, -1) {
+			if !cited[m[1]] {
+				t.Errorf("the Summary cites %q, which is no name, dimension or key in the envelope: %s", m[1], line)
+			}
+		}
+		// A line that names both a keyed row and its corpus denominator has
+		// declared its arithmetic; anything else must quote a row verbatim.
+		derived := strings.Contains(line, "over corpus `")
+		for _, got := range figure.FindAllString(line, -1) {
+			if !rendered[got] && !derived {
+				t.Errorf("the Summary states %q, which no envelope row renders: %s", got, line)
+			}
+		}
+	}
+
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{
+		"`Bash`, `Read`, `Edit` together return 80.0%", // 500+200+100 of 1,000
+		"`(unattributed)` holds 90.0% of `attribution_plugin`",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the Summary is missing the derived figure %q:\n%s", want, joined)
 		}
 	}
 }

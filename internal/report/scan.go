@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -99,7 +100,7 @@ func RenderScan(w io.Writer, env Envelope) error {
 		if m.Key != "" {
 			label = m.Key
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", label, formatValue(m.Value), m.Derivation)
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", label, formatValue(m.Value, m.Unit), m.Derivation)
 	}
 	return renderTail(w, tw, env)
 }
@@ -130,7 +131,7 @@ func writeCorpus(tw io.Writer, env Envelope) {
 	fmt.Fprint(tw, "\nCORPUS\t\t\n")
 	for _, m := range env.Metrics {
 		if m.Dimension == "corpus" {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", m.Name, formatValue(m.Value), m.Derivation)
+			fmt.Fprintf(tw, "%s\t%s\t%s\n", m.Name, formatValue(m.Value, m.Unit), m.Derivation)
 		}
 	}
 }
@@ -144,18 +145,92 @@ func day(ts string) string {
 	return ts[:10]
 }
 
-func formatValue(v any) string {
+// formatValue renders one metric value by what it measures. The unit decides
+// the shape before the type does: a byte count, a percentage, a dollar amount
+// and a bare count are four different things, and printing all four through
+// %g is what made these tables read as JSON with tab stops.
+func formatValue(v any, unit string) string {
+	switch unit {
+	case "bytes":
+		switch n := v.(type) {
+		case int:
+			return humanizeBytes(int64(n))
+		case int64:
+			return humanizeBytes(n)
+		}
+	case "percent":
+		if n, ok := v.(float64); ok {
+			return strconv.FormatFloat(n, 'f', 1, 64) + "%"
+		}
+	case "usd":
+		if n, ok := v.(float64); ok {
+			return formatUSD(n)
+		}
+	case "ratio":
+		if n, ok := v.(float64); ok {
+			return formatRatio(n)
+		}
+	}
 	switch n := v.(type) {
 	case int:
 		return comma(int64(n))
 	case int64:
 		return comma(n)
 	case float64:
-		// 'g' keeps a 23.6x multiplier readable and a $0.0000149 allocation
-		// honest, rather than rounding the second one away to zero.
+		// The tension this comment used to name — keeping a multiplier
+		// readable without rounding a sub-cent allocation away to zero — is
+		// resolved per unit above. 'g' remains the honest fallback for a float
+		// whose unit says nothing about how to shape it.
 		return strconv.FormatFloat(n, 'g', 6, 64)
 	}
 	return fmt.Sprint(v)
+}
+
+// humanizeBytes renders a byte count in SI units — divided by 1000, labelled
+// MB. tare measures bytes on disk, which is what a disk-size claim reports.
+// Dividing by 1024 and calling the result MB is the most common humanization
+// bug there is; this function must never mix the two.
+func humanizeBytes(n int64) string {
+	if n < 0 {
+		return "-" + humanizeBytes(-n)
+	}
+	if n < 1000 {
+		return comma(n) + " B"
+	}
+	f, unit := float64(n)/1000, "kB"
+	for _, next := range []string{"MB", "GB", "TB"} {
+		if f < 1000 {
+			break
+		}
+		f, unit = f/1000, next
+	}
+	return strconv.FormatFloat(f, 'f', 1, 64) + " " + unit
+}
+
+// formatUSD renders money as money. Below a cent the two-decimal form would
+// round a real allocation to $0.00, so those print their exact value instead:
+// the sub-cent shares are the point of the per-skill cost table, and this
+// codebase treats an absent number as a warning rather than a zero.
+func formatUSD(n float64) string {
+	if n != 0 && math.Abs(n) < 0.01 {
+		return "$" + strconv.FormatFloat(n, 'f', -1, 64)
+	}
+	return "$" + strconv.FormatFloat(n, 'f', 2, 64)
+}
+
+// formatRatio renders the two quantities that share the ratio unit. A
+// coverage_ratio is a fraction of one and reads as 0.52; a rebill_multiplier
+// is a multiple and reads as 28×. Formatting every ratio as an integer
+// multiple would round all 140 coverage rows to 0× and say nothing at all.
+func formatRatio(n float64) string {
+	switch {
+	case n <= 1:
+		return strconv.FormatFloat(n, 'f', 2, 64)
+	case n < 10:
+		return strconv.FormatFloat(n, 'f', 1, 64) + "×"
+	default:
+		return comma(int64(n+0.5)) + "×"
+	}
 }
 
 func comma(n int64) string {

@@ -219,7 +219,7 @@ type row struct {
 // a missing map key did before.
 func (r row) cell(name string) string {
 	m := r.values[name]
-	return formatValue(m.Value)
+	return formatValue(m.Value, m.Unit)
 }
 
 // groupRows folds the flat metric rows of one dimension back into table rows,

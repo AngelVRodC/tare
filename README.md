@@ -7,10 +7,16 @@
 
 *The weight of the empty container, excluded from the payload.*
 
-`tare` reads your local Claude Code transcripts and reports which of your
-installed tooling actually costs context: per-tool byte volume, per-skill /
-per-plugin / per-MCP-server attribution, and the evidence that a tool changed
-an answer. Every number is tagged with how it was arrived at.
+`tare` reads your local agent transcripts and reports which of your installed
+tooling actually costs context: per-tool byte volume, per-skill / per-plugin /
+per-MCP-server attribution, and where the context is re-billed. It says what
+your tooling **costs**, not whether it was worth it — see
+[What it deliberately does not do](#what-it-deliberately-does-not-do). Every
+number is tagged with how it was arrived at, and a number the harness never
+recorded is named as unavailable rather than printed as zero.
+
+Two harnesses are read: Claude Code, and [OpenCode](#opencode) behind
+`tare tools --harness opencode`.
 
 > ```bash
 > go build -o tare . && ./tare report
@@ -36,7 +42,7 @@ later.
         │
         │  bufio.Reader, one line at a time; the corpus is never loaded
         ▼
-   event stream                      21 event types here, from 28 CLI versions
+   event stream                      21 event types here, from 29 CLI versions
         │
         ├─ tool_use ⟷ tool_result    joined on tool_use_id → bytes per tool
         ├─ message.id                deduplicated → fresh vs. re-billed tokens
@@ -45,7 +51,7 @@ later.
 ```
 
 Event shapes are sniffed, never trusted to a version field: tolerant structs,
-with `json.RawMessage` over the regions that changed across those 28 versions.
+with `json.RawMessage` over the regions that changed across those 29 versions.
 An unknown event type increments a counter and is reported; it is never fatal.
 An unmatched `tool_use_id` is the opposite — the join is the product, so a
 failure there is a reportable defect, not a rounding error.
@@ -55,13 +61,21 @@ them. They overlap on purpose — `tools` and `corruption` both count calls per
 tool — and where two passes disagree about the same metric the artifact emits a
 warning instead of quoting the first one as the truth.
 
+All of the above is the Claude Code path. OpenCode keeps its transcripts in one
+SQLite database rather than a tree of `.jsonl`, and only `tare tools` reads it —
+see [OpenCode](#opencode).
+
 ## Install
 
 ```bash
 go build -o tare .
 ```
 
-Go 1.27 or later. There is nothing else to install — see [Dependencies](#dependencies).
+Go 1.27 or later, and no Go modules to fetch — see
+[Dependencies](#dependencies). One local binary is not optional though:
+`--harness opencode` needs `sqlite3` on `PATH` and fails without it. macOS and
+most Linux distributions ship it. Everything else runs on the standard library
+alone.
 
 ## Quick start
 
@@ -125,15 +139,22 @@ Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
 | Command | What it answers | Own flags |
 |---|---|---|
 | `tare scan` | What is in the corpus at all — files, bytes, date range, event types, CLI versions, retention gap | — |
-| `tare tools` | What each tool cost — calls, context bytes in, produced bytes out, errors | — |
+| `tare tools` | What each tool cost — calls and context bytes in; errors and produced bytes where recorded | `--harness` |
 | `tare attribute` | Which skill / plugin / agent / MCP server the tokens belong to, and how much prior context was re-billed | `--top`, `--all` |
 | `tare corruption` | What share of calls errored, returned nothing, or carried a truncation marker | `--boost-deep`, `--top`, `--all` |
 | `tare report` | All four, composed into one reproducible artifact | — |
 
 | Global flag | Default | Effect |
 |---|---|---|
-| `--dir` | `~/.claude/projects` | Transcript root to read |
+| `--dir` | `~/.claude/projects`; `~/.local/share/opencode` with `--harness opencode` | Transcript root to read |
 | `--json` | off | Emit the JSON envelope instead of the table |
+
+`--harness` is `tools` only: which harness to read, claude-code (default) or
+opencode. Registered there and nowhere else, so `tare scan --harness opencode`
+is an error rather than a flag that silently does nothing — the same rule
+`--boost-deep` follows. `scan`, `attribute`, `corruption` and `report` read
+Claude Code and nothing else. See [OpenCode](#opencode) for what the second
+reader can and cannot measure.
 
 `--boost-deep` joins every Boost MCP call from its history DB via `sqlite3`
 rather than the 100-row JSON sample. It is registered on `corruption` only, on
@@ -152,6 +173,113 @@ Markdown `tare report` never truncates at all — a file is not a terminal, and
 machine. Both are self-contained — the header records the tool version, the
 corpus path, its file and byte count, its date range, every Claude Code version
 that wrote it, and the exact command to re-run.
+
+## OpenCode
+
+```bash
+$ tare tools --harness opencode
+```
+
+```
+tare tools — /Users/you/.local/share/opencode
+2026-08-16 .. 2026-08-16
+
+CORPUS
+Distinct tools                18
+Tool calls                    94
+Bytes returned into context   189.6 kB
+Calls that returned an error  1
+all rows measured
+
+TOOL                         CALLS  CONTEXT   IMAGES  PRODUCED  ERRORS  SHARE
+read                         24     103.5 kB                    0       54.6%  !!
+webfetch                     2      37.2 kB                     0       19.6%  *
+bash                         21     20.6 kB                     0       10.9%  *
+context7_query-docs          2      9.8 kB                      0       5.1%   *
+task                         5      6.9 kB                      1       3.7%
+engram_mem_search            6      3.2 kB                      0       1.7%
+context7_resolve-library-id  1      1.8 kB                      0       1.0%
+engram_mem_save              5      1.4 kB                      0       0.8%
+glob                         2      1.4 kB                      0       0.7%
+question                     3      1.4 kB                      0       0.7%
+engram_mem_context           1      585 B                       0       0.3%
+engram_mem_current_project   2      471 B                       0       0.2%
+engram_mem_session_summary   2      347 B                       0       0.2%
+write                        13     312 B                       0       0.2%
+grep                         1      274 B                       0       0.1%
+engram_mem_save_prompt       1      234 B                       0       0.1%
+engram_mem_review            1      130 B                       0       0.1%
+edit                         2      52 B                        0       0.0%
+
+MCP_SERVER  CALLS  CONTEXT  IMAGES  PRODUCED  ERRORS  SHARE
+context7    3      11.6 kB                    0       6.1%   *
+engram      18     6.4 kB                     0       3.4%
+
+warning: image_bytes and image_results are not reported for opencode: it stores a tool result as one output string with no image payload broken out, so the figure is unmeasured — it is not a measurement of zero
+warning: produced_bytes, externalised_results, externalised_produced_bytes and externalised_context_bytes are not reported for opencode: it records no pre-truncation output size and writes no side files, so what a tool produced before it reached the context is unmeasured — it is not a measurement of zero
+warning: tool_use_blocks, tool_result_blocks, unmatched_results and unanswered_uses are not reported for opencode: the call and its result share one row, so the join those counters audit does not exist here — they have no meaning rather than a value of zero
+warning: corpus bytes is the size of opencode.db on disk, which includes indices and tables this command does not read — it is not comparable to a Claude Code corpus byte count
+```
+
+The envelope is the same one the Claude Code path emits — same command name,
+same metric names — so the table, `--json` and the derivation contract are
+unchanged. Only the reader differs.
+
+`--dir` defaults to `~/.local/share/opencode`, which has to contain
+`opencode.db`. Reading it shells out to the system `sqlite3` — **required**
+here, not optional; see [Dependencies](#dependencies) — and the rollup runs
+*inside* SQLite, so no message content ever enters the process.
+
+**Reading this database writes to its directory.** Measured, and it is the one
+thing about this reader that is not obvious: `opencode.db` is in WAL mode, and
+a `sqlite3 -readonly` open needs `opencode.db-wal` beside it — that file, not
+`-shm`, is what decides whether the open succeeds. `-shm` is a file SQLite
+builds for itself, so when it is absent SQLite creates it, and a `-readonly`
+read therefore needs a **writable directory**. `opencode.db` and
+`opencode.db-wal` are never modified — byte-for-byte identical afterwards; the
+only change on disk is a new `opencode.db-shm`. Consequences before you point `--dir`
+somewhere:
+
+- To freeze a snapshot, copy all three of `opencode.db`, `opencode.db-wal` and
+  `opencode.db-shm`. With all three present nothing is created and a read-only
+  directory works.
+- Copy the `.db` alone — or the `.db` with only `-shm` — and the read **fails
+  loudly** rather than quietly reporting a stale number. The error names the
+  file to copy.
+- An archive on read-only media fails unless `-shm` was archived with it.
+
+MCP server names come from `~/.config/opencode/opencode.json` under `.mcp`.
+They have to: OpenCode joins server and tool with a single `_`, and tool names
+contain `_` of their own, so `engram_mem_search` splits as plausibly into
+`engram_mem` / `search` as into `engram` / `mem_search`. The configured list is
+the only authority, matched longest name first so a server whose name prefixes
+another cannot claim its tools. Claude Code's uglier `mcp__server__tool` needs
+no config — that is the one place it is the better design. With no config file
+there is no `MCP_SERVER` block at all, and a warning says so rather than the
+table quietly shrinking.
+
+### What OpenCode does not record
+
+A blank cell above is **unmeasured, never a measured zero** — the four warnings
+in that run name every one of them. The rule holds even where the zero would be
+*true*: OpenCode writes no side files, so `externalised_*` really is nothing,
+and tare still withholds it rather than printing a `0` it did not measure.
+
+| Absent | Cause |
+|---|---|
+| `image_bytes`, `image_results` | A result is one output string, with no image payload broken out |
+| `produced_bytes` | No pre-truncation output size is recorded |
+| `externalised_results`, `externalised_produced_bytes`, `externalised_context_bytes` | No side files are written |
+| `tool_use_blocks`, `tool_result_blocks`, `unmatched_results`, `unanswered_uses` | `callID` sits on the result's own row, so the join these audit does not exist |
+| `errors`, per tool | Withheld, with the corpus total, for any tool whose rows carry no call status |
+
+`corpus.bytes` here is the size of `opencode.db` on disk — indices and unread
+tables included — so it is not comparable to a Claude Code corpus byte count.
+
+Tokens, dollars and OpenCode's own `agent` field are all present in the
+database and none of them are read yet. `tare attribute` stays Claude Code
+only until it is decided what a table covering one of its five dimensions is
+allowed to claim.
 
 ## Every number is tagged
 
@@ -234,12 +362,17 @@ diff a.json b.json      # no output — the two runs are byte-identical
 - **Outcome measurement.** `tare` says what your tooling costs. It cannot say
   whether it paid for itself; that needs a counterfactual (replay the task with
   the skill disabled), and it is deliberately not in this version.
-- **Other harnesses.** Claude Code only. No adapter interface, no plugin
-  registry — one implementation is not an abstraction.
+- **An adapter interface.** Two harnesses are read, and neither reaches the
+  other through an interface or a plugin registry. `tare tools` picks one of two
+  functions and hands both results to the same renderer — that is the entire
+  seam. Two readers, one of which supplies one of the five commands, is not yet
+  a shape worth inventing.
 - **Anything over the network.** No pricing API, no telemetry, no update check.
-  The only external processes it ever starts are local binaries (`boost`,
-  `sqlite3`) for the optional Boost counterfactual, and their absence degrades
-  to a stated warning.
+  The only external processes it ever starts are local binaries — `sqlite3` to
+  read the OpenCode database, `boost` and `sqlite3` for the optional Boost
+  counterfactual. A missing `boost` degrades to a stated warning; a missing
+  `sqlite3` fails `--harness opencode` outright, because there it is the only
+  data source.
 
 ## Known ceilings
 
@@ -253,19 +386,26 @@ its own error bars.
 | Claude Code prunes transcripts | Sessions Claude Code counted are gone from disk; `tare scan` reports the gap |
 | The same API response is written to the transcript many times | Responses are deduplicated by `message.id` before any token is summed |
 | A truncation marker is a literal substring match | A result that quotes one is a false positive; the named tools have to be checked |
+| OpenCode records no image payload and no pre-truncation output size | Those columns are blank under `--harness opencode`, and blank means unmeasured — see [What OpenCode does not record](#what-opencode-does-not-record) |
 
 ## Dependencies
 
-Zero.
+Two different things get called a dependency, and conflating them is how a
+"zero dependencies" badge starts lying. Both are stated:
+
+| | |
+|---|---|
+| **Go modules** | **Zero.** Standard library only: `encoding/json`, `bufio`, `os`, `os/exec`, `text/tabwriter`, `flag`. No CLI framework, no table library, no HTTP client. |
+| **Local binaries invoked** | `sqlite3` — **required** for `--harness opencode`, which fails outright without it because it is that reader's only data source. `boost` and `sqlite3` — **optional** for `--boost-deep`, which degrades to a warning. Nothing else, ever, and never over a network. |
 
 ```bash
 go list -m all | wc -l   # 1 — the module itself, nothing else
 ```
 
-Standard library only: `encoding/json`, `bufio`, `os`, `os/exec`,
-`text/tabwriter`, `flag`. No CLI framework, no table library, no HTTP client. A
-tool whose argument is *"your tooling costs more than it returns"* ships with no
-dependencies or it argues against itself.
+A tool whose argument is *"your tooling costs more than it returns"* ships with
+no dependencies or it argues against itself. That argument is about what gets
+compiled in and shipped to you; a system binary you already have is a different
+claim, so it gets its own row rather than being quietly folded into the zero.
 
 ## A run on the author's corpus
 
@@ -310,12 +450,19 @@ sessions against 141 transcripts still on disk: 3 gone.
 | Dollars read `unavailable` | That session has no `cost-state` event. Reporting the gap is deliberate; reporting `$0.00` would be a lie. |
 | `retention_gap` is non-zero | Claude Code pruned transcripts its own cache still counts. Those sessions cannot be measured at all. |
 | No Boost rows under `corruption` | `boost` or `sqlite3` is not on `PATH`. The counterfactual degrades to a warning; every other metric still runs. |
+| `tare: flag provided but not defined: -harness` | `--harness` is registered on `tools` only. The other four commands read Claude Code and nothing else. |
+| `tare: unknown --harness "…"` | The two values are `claude-code` and `opencode`. The error names both. |
+| `tare: sqlite3 is not on PATH …` | Unlike Boost, this is the OpenCode reader's only data source, so it fails instead of degrading. `sqlite3` ships with macOS. |
+| `tare: opencode database not readable` | `--dir` has to be the directory holding `opencode.db`, not the file itself. It defaults to `~/.local/share/opencode`. |
+| `tare: opencode query failed: the opencode.db-wal sidecar is missing` | `opencode.db` is in WAL mode and cannot be opened read-only without `-wal`. Copy all three of `.db`, `.db-wal` and `.db-shm`. Copying `.db` plus `-shm` does *not* help — `-wal` is the one that matters. |
+| `tare: opencode query failed: opencode.db-shm is absent, so sqlite3 has to create it` | The directory is not writable. Reading needs to create `-shm`; copy all three files somewhere writable, or archive `-shm` alongside the other two. |
+| The `IMAGES` and `PRODUCED` columns are blank under `--harness opencode` | Working as intended — blank is unmeasured, and printing `0` would be a claim tare cannot support. See [What OpenCode does not record](#what-opencode-does-not-record). |
 
 ## Contributing
 
 Issues and pull requests are welcome. The most useful contribution is a
 transcript shape this tool gets wrong — Claude Code has written this corpus in
-28 versions so far, and the next one will move something again.
+29 versions so far, and the next one will move something again.
 
 ### Getting set up
 
@@ -350,7 +497,7 @@ to argue the case in its description, not quietly work around it.
 | Standard library only | A tool arguing that your tooling costs more than it returns ships with no dependencies or it argues against itself | [Dependencies](#dependencies) |
 | Stream, never load | The corpus is a quarter of a gigabyte and grows | [How it works](#how-it-works) |
 | `bufio.Reader`, never `bufio.Scanner` | The longest measured line is 514,199 bytes; any cap is a knob to re-tune later | [How it works](#how-it-works) |
-| Sniff the shape, never trust a version field | 28 CLI versions wrote this corpus and none of them promised a schema | [How it works](#how-it-works) |
+| Sniff the shape, never trust a version field | 29 CLI versions wrote this corpus and none of them promised a schema | [How it works](#how-it-works) |
 | Loud on the join, quiet on the unknown | An unmatched `tool_use_id` is a defect; an unrecognised event type is a counter | [How it works](#how-it-works) |
 | Every metric carries a `derivation` | An untagged number cannot be argued with | [Every number is tagged](#every-number-is-tagged) |
 | No network, ever | Transcript content does not leave the machine | [What it deliberately does not do](#what-it-deliberately-does-not-do) |

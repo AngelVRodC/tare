@@ -110,24 +110,50 @@ func openCodeRead(dir string) (rows []openCodeToolRow, span openCodeSpan, dbSize
 	}
 	out, err := runCmd(bin, "-readonly", "-json", db, openCodeQuery)
 	if err != nil {
-		// Which cause gets named is decided by a stat, not by guessing: telling a
-		// user to recreate a file already sitting beside their database is the
-		// same over-claim this file exists to prevent. Measured: opencode writes
-		// in WAL mode, and a -readonly open fails with error 14 when -shm is
-		// absent — the normal state once every connection has closed.
-		//
-		// `file:...?immutable=1` opens in both states and is deliberately not
-		// used: it ignores the WAL, trading a loud failure for a stale number.
-		cause := "a schema change, or the database is locked by another process"
-		if _, statErr := os.Stat(db + "-shm"); os.IsNotExist(statErr) {
-			cause = fmt.Sprintf("the %[1]s-shm sidecar is missing, and opencode writes %[1]s in WAL mode, "+
-				"where a read-only open needs it — start opencode once to recreate it, or copy %[1]s together "+
-				"with its -wal and -shm files and point --dir at the copy", openCodeDBName)
-		}
-		return nil, openCodeSpan{}, 0, fmt.Errorf("opencode query failed: %s: %w", cause, err)
+		return nil, openCodeSpan{}, 0, fmt.Errorf("opencode query failed: %s: %w", openCodeFailureCause(db), err)
 	}
 	rows, span, err = openCodeRows(out)
 	return rows, span, fi.Size(), err
+}
+
+// openCodeFailureCause names why a -readonly open of db failed, from what is on
+// disk beside it rather than from guessing: telling a user to recreate a file
+// already sitting next to their database is the same over-claim the rest of
+// this file exists to prevent. Split out of openCodeRead so it is testable with
+// no sqlite3 on PATH, exactly as openCodeRows and boostReportMetrics are.
+//
+// Measured 2026-09-06, every failing case returning error 14:
+//
+//	.db alone                     rc=14
+//	.db + -wal                    rc=0, and sqlite3 CREATES -shm in that directory
+//	.db + -shm                    rc=14
+//	all three                     rc=0
+//	.db + a touched 0-byte -wal   rc=0 — an empty -wal is enough
+//	chmod 555 dir, .db + -wal     rc=14 — cannot create -shm
+//	chmod 555 dir, all three      rc=0
+//
+// So **-wal is the discriminator, not -shm**: -shm is neither necessary nor
+// sufficient. It is a file sqlite3 builds for itself when it is missing, which
+// is why reading needs a *writable directory* whenever it is absent — a
+// read-only open still writes, just never to .db or -wal. An earlier version of
+// this branch stat'd -shm, so it fired only when -wal happened to be missing
+// too, blamed the wrong file, and sent a user who had copied .db + -shm hunting
+// for a lock that was not there.
+//
+// `file:...?immutable=1` opens in every one of these states and is deliberately
+// not used: it ignores the WAL, trading a loud failure for a stale number.
+func openCodeFailureCause(db string) string {
+	if _, err := os.Stat(db + "-wal"); os.IsNotExist(err) {
+		return fmt.Sprintf("the %[1]s-wal sidecar is missing, and opencode writes %[1]s in WAL mode, "+
+			"where a read-only open needs it — copy %[1]s together with its -wal and -shm files and "+
+			"point --dir at the copy", openCodeDBName)
+	}
+	if _, err := os.Stat(db + "-shm"); os.IsNotExist(err) {
+		return fmt.Sprintf("%[1]s-shm is absent, so sqlite3 has to create it before it can read %[1]s, "+
+			"and the directory holding them has to be writable for that — copy all three of %[1]s, "+
+			"-wal and -shm somewhere writable and point --dir there", openCodeDBName)
+	}
+	return "a schema change, or the database is locked by another process"
 }
 
 // openCodeServers reads the configured MCP server names out of opencode.json.

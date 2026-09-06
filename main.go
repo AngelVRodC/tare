@@ -261,7 +261,7 @@ usage: tare <command> [flags]
 
 commands:
   scan       corpus inventory: files, bytes, date range, per-type event counts
-  tools      per-tool call counts, context bytes, produced bytes and errors
+  tools      per-tool call counts and context bytes; errors and produced bytes where recorded
   attribute  tokens by skill/plugin/agent/MCP, context re-billing, attachment volume
   corruption per-tool error, empty and truncation rates, plus the Boost counterfactual
   report     all four composed into one reproducible artifact (Markdown, or --json)

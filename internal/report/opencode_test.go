@@ -148,6 +148,36 @@ func TestOpenCodeReadSkipsWithoutSqlite3(t *testing.T) {
 	}
 }
 
+// Measured over all four sidecar combinations: -wal decides whether a -readonly
+// open succeeds, and -shm is neither necessary nor sufficient — sqlite3 creates
+// it when it is missing, which is why that case is a writable-directory
+// problem. A previous version stat'd -shm and so blamed the wrong file.
+func TestOpenCodeFailureCause(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		sidecars []string
+		want     string
+	}{
+		{"no sidecars at all", nil, "-wal sidecar is missing"},
+		{"shm copied but not wal", []string{"-shm"}, "-wal sidecar is missing"},
+		{"wal present, shm absent", []string{"-wal"}, "has to be writable"},
+		{"both present", []string{"-wal", "-shm"}, "locked by another process"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			db := filepath.Join(dir, openCodeDBName)
+			for _, s := range append([]string{""}, tc.sidecars...) {
+				if err := os.WriteFile(db+s, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := openCodeFailureCause(db); !strings.Contains(got, tc.want) {
+				t.Errorf("openCodeFailureCause = %q, want it to mention %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // A tool group whose rows all lack $.state.status makes sum() return SQL NULL.
 // Decoding that into an int64 field would silently claim zero errors.
 func TestOpenCodeRowsNullErrorsIsNotZero(t *testing.T) {

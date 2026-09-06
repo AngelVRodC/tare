@@ -127,9 +127,11 @@ func run(args []string, out io.Writer) error {
 	case "report":
 		// Four passes over a quarter-gigabyte corpus take about four seconds
 		// with nothing printed, which reads as a hang. One line per pass to
-		// stderr fixes that without touching the artifact on stdout, and only
-		// on a terminal: a pipe or a redirect gets bytes that are only the
-		// report. The other four commands finish fast enough to need none.
+		// stderr fixes that without ever touching the artifact on stdout, so
+		// `> out.md` still yields a file that is only the report while the
+		// terminal shows progress. Gated on stderr being that terminal, so a
+		// piped or captured stderr stays silent. The other four commands
+		// finish fast enough to need none.
 		var progress io.Writer
 		if isTTY() {
 			progress = os.Stderr
@@ -154,18 +156,27 @@ func run(args []string, out io.Writer) error {
 	}
 }
 
-// isTTY reports whether stdout is a terminal. This is the only TTY check in
+// isTTY reports whether stderr is a terminal. This is the only TTY check in
 // the program; it gates a progress line and nothing else. Correct on macOS and
 // Linux, which is where this tool runs — it does not handle Cygwin/MSYS2 the
 // way mattn/go-isatty does, and adding a dependency to cover that would cost
 // more than the line is worth.
+//
+// Stderr, not stdout, because stderr is where the progress goes: the question
+// is whether the stream being written to can be seen, and stdout is not that
+// stream. Gating on stdout printed nothing for `tare report > out.md` run from
+// a real terminal — measured under a PTY — which is the four seconds of
+// silence this check exists to remove, in the most common invocation. It also
+// dropped a false positive: /dev/null is a character device, so a stdout gate
+// fired on `> /dev/null` for no reason. Stderr stays correctly silent for
+// `2>&1 | rg`, for `2>err.txt`, and in CI, where nothing is attached.
 //
 // It lives here rather than in internal/report because this is the only caller
 // and this file already owns which stream each command writes to. BuildReport
 // honours any writer it is handed, so it stays testable with a buffer from a
 // test process that has no terminal at all.
 func isTTY() bool {
-	fi, err := os.Stdout.Stat()
+	fi, err := os.Stderr.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 

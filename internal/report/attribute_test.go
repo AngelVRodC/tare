@@ -397,6 +397,55 @@ func TestRenderAttributeReadsEnvelope(t *testing.T) {
 	}
 }
 
+// TestUnattributedWarnsAboveThreshold pins the confidence bound. Re-billed
+// tokens are cache reads and nothing else, so `read` alone sets each share.
+//
+// The warning is one line for every thin dimension, the same collapse
+// TestAbsentModelsCollapse pins below — and it fires on the share, so a corpus
+// whose fields are almost all populated must produce none.
+func TestUnattributedWarnsAboveThreshold(t *testing.T) {
+	const model = "claude-opus-5"
+	allFive := map[string]string{
+		"attributionSkill":     "alpha",
+		"attributionPlugin":    "desplega",
+		"attributionAgent":     "phase-running",
+		"attributionMcpServer": "context7",
+		"attributionMcpTool":   "query-docs",
+	}
+	unattributedShare := func(t *testing.T, claimed, unclaimed int64) []string {
+		t.Helper()
+		env := attributeCorpus(t,
+			usageLine(t, "s1", "msg_1", model, tokens{in: 10, read: claimed}, allFive),
+			usageLine(t, "s1", "msg_2", model, tokens{in: 10, read: unclaimed}, nil),
+		)
+		var thin []string
+		for _, w := range env.Warnings {
+			if strings.Contains(w, "are (unattributed)") {
+				thin = append(thin, w)
+			}
+		}
+		return thin
+	}
+
+	// 6,000 of 10,000 re-billed tokens carry no attribution field at all: 60%
+	// unattributed in every one of the five dimensions.
+	thin := unattributedShare(t, 4_000, 6_000)
+	if len(thin) != 1 {
+		t.Fatalf("want exactly one collapsed warning, got %d: %v", len(thin), thin)
+	}
+	for _, want := range []string{"5 of 5", "attribution_skill 60.0%", "attribution_mcp_tool 60.0%", "floor, not a total"} {
+		if !strings.Contains(thin[0], want) {
+			t.Errorf("warning %q does not say %q", thin[0], want)
+		}
+	}
+
+	// 500 of 10,000 — 5%, under the threshold on all five. Silence is the
+	// result: the caveat has to mean something when it does appear.
+	if quiet := unattributedShare(t, 9_500, 500); len(quiet) != 0 {
+		t.Errorf("5%% unattributed warned anyway: %v", quiet)
+	}
+}
+
 // TestAbsentModelsCollapse pins the warning shape. A model billed in a session
 // the transcript never recorded is a real finding, but one line per session
 // reached ~50 rows on the real corpus and buried every other warning. One line,

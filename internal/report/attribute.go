@@ -21,6 +21,21 @@ const unattributedKey = "(unattributed)"
 // out of the one allocation method too, never a second path.
 const sessionDim = "session"
 
+// thinAttribution is the (unattributed) share of re-billed tokens above which
+// a dimension's named rows are a minority of its own tokens, so the dollars
+// beside them are a floor rather than a total.
+//
+// A judgment call, not a measurement — but half is the one value that makes the
+// claim literally true: past it the rows no field claimed outweigh every named
+// row combined. A lower gate would fire on dimensions where the named rows
+// still hold the majority, and then the warning would overstate its case.
+//
+// On the corpus this was written against all five dimensions sit between 56%
+// and 94%, so the gate does not separate them today. It exists to keep saying
+// so, and to go quiet the day one drops below half — which is the only signal
+// it can send.
+const thinAttribution = 50.0
+
 // attributionDims are the five un-redacted fields the product exists to read.
 // Anthropic's own OTel export reduces the plugin and skill names to
 // "third-party" and the MCP servers to "custom"; these carry the real names.
@@ -209,6 +224,35 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 	}
 	if absent != "" {
 		bld.warn("%s", absent)
+	}
+	// (unattributed) prints as an ordinary top row, but it is the confidence
+	// bound on the whole table: every response no field claimed lands there, so
+	// past thinAttribution the named rows own a minority of the tokens and each
+	// dollar beside them is a floor. One line for all of them — five
+	// near-identical lines is the noise 7ce2c75 collapsed for absent models.
+	//
+	// sessionDim is deliberately not checked. Its key is the raw session id and
+	// never the sentinel, so that dimension has no (unattributed) row to
+	// measure and a share there would be 0% by construction, not by coverage.
+	//
+	// Ranged over attributionDims rather than a map: the order is fixed by
+	// declaration — the order the tables themselves print in — so the string
+	// is byte-identical run to run, which is what TestReportReproducible pins.
+	var thin []string
+	for _, d := range attributionDims {
+		r := byDim[dimKey{d.name, unattributedKey}]
+		if r == nil {
+			continue
+		}
+		if share := percent(r.Rebilled, total.Rebilled); share > thinAttribution {
+			thin = append(thin, fmt.Sprintf("%s %.1f%%", d.name, share))
+		}
+	}
+	if len(thin) > 0 {
+		// The qualifier leads and the list follows. Trailing it after the names
+		// read as if it applied only to the last one.
+		bld.warn("%d of %d attribution dimensions are majority-unclaimed — over %.0f%% of their re-billed tokens are (unattributed): %s. Every dollar figure in those tables is a floor, not a total",
+			len(thin), len(attributionDims), thinAttribution, strings.Join(thin, ", "))
 	}
 	return bld.done(scanStats), nil
 }

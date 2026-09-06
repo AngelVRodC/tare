@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/AngelVRodC/tare/internal/report"
@@ -30,6 +31,14 @@ func run(args []string, out io.Writer) error {
 	}
 
 	cmd := args[0]
+	// Help is answered before the flag parse, and on stdout rather than stderr:
+	// it was asked for, so it is this run's output and belongs in a pipe.
+	switch cmd {
+	case "--help", "-h", "help":
+		usage(out)
+		return nil
+	}
+
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	dir := fs.String("dir", defaultDir(), "transcript root directory")
@@ -93,6 +102,12 @@ func run(args []string, out io.Writer) error {
 		return report.RenderReport(out, rep, time.Now())
 	default:
 		usage(os.Stderr)
+		// A leading flag is an ordering mistake, not an unknown command. The
+		// README documents the ordering; the error should agree with it rather
+		// than report `unknown command "--json"`.
+		if strings.HasPrefix(cmd, "-") {
+			return fmt.Errorf("flags go after the command: tare <command> %s", cmd)
+		}
 		return fmt.Errorf("unknown command %q", cmd)
 	}
 }

@@ -102,7 +102,16 @@ func run(args []string, out io.Writer) error {
 		}
 		return report.RenderCorruption(out, env)
 	case "report":
-		rep, err := report.BuildReport(*dir, version)
+		// Four passes over a quarter-gigabyte corpus take about four seconds
+		// with nothing printed, which reads as a hang. One line per pass to
+		// stderr fixes that without touching the artifact on stdout, and only
+		// on a terminal: a pipe or a redirect gets bytes that are only the
+		// report. The other four commands finish fast enough to need none.
+		var progress io.Writer
+		if isTTY() {
+			progress = os.Stderr
+		}
+		rep, err := report.BuildReport(*dir, version, progress)
 		if err != nil {
 			return err
 		}
@@ -120,6 +129,21 @@ func run(args []string, out io.Writer) error {
 		}
 		return fmt.Errorf("unknown command %q", cmd)
 	}
+}
+
+// isTTY reports whether stdout is a terminal. This is the only TTY check in
+// the program; it gates a progress line and nothing else. Correct on macOS and
+// Linux, which is where this tool runs — it does not handle Cygwin/MSYS2 the
+// way mattn/go-isatty does, and adding a dependency to cover that would cost
+// more than the line is worth.
+//
+// It lives here rather than in internal/report because this is the only caller
+// and this file already owns which stream each command writes to. BuildReport
+// honours any writer it is handed, so it stays testable with a buffer from a
+// test process that has no terminal at all.
+func isTTY() bool {
+	fi, err := os.Stdout.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
 // defaultDir is where Claude Code keeps its transcripts.

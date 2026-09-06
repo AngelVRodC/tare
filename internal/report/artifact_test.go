@@ -67,7 +67,7 @@ func TestReportReproducible(t *testing.T) {
 
 	var first []byte
 	for run := range 8 {
-		rep, err := BuildReport(dir, "test")
+		rep, err := BuildReport(dir, "test", nil)
 		if err != nil {
 			t.Fatalf("BuildReport: %v", err)
 		}
@@ -89,7 +89,7 @@ func TestReportReproducible(t *testing.T) {
 // two renders of one report differ in the generated line and nowhere else.
 func TestReportMarkdownVariesOnlyByTimestamp(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	rep, err := BuildReport(reportCorpus(t), "test")
+	rep, err := BuildReport(reportCorpus(t), "test", nil)
 	if err != nil {
 		t.Fatalf("BuildReport: %v", err)
 	}
@@ -121,13 +121,64 @@ func TestReportMarkdownVariesOnlyByTimestamp(t *testing.T) {
 	}
 }
 
+// TestBuildReportSilentWhenProgressNil pins the default. A nil progress writer
+// must not emit a byte, and the claim is about the process streams and not
+// just the parameter: a stray Fprintln to os.Stderr inside a pass is invisible
+// on a terminal and corrupts every run whose output is read by a machine.
+func TestBuildReportSilentWhenProgressNil(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no boost, no sqlite3: the corpus is the only input
+	dir := reportCorpus(t)
+
+	stdout, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, savedErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = stdout, stderr
+	t.Cleanup(func() { os.Stdout, os.Stderr = saved, savedErr })
+
+	if _, err := BuildReport(dir, "test", nil); err != nil {
+		t.Fatalf("BuildReport: %v", err)
+	}
+	for _, f := range []*os.File{stdout, stderr} {
+		fi, err := f.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Size() != 0 {
+			t.Errorf("%s got %d bytes, want silence", filepath.Base(f.Name()), fi.Size())
+		}
+	}
+}
+
+// TestBuildReportWritesProgress checks each pass announces itself, in order,
+// before it runs — four seconds of silence over a quarter-gigabyte corpus
+// reads as a hang. It asserts against a buffer rather than os.Stderr because
+// the writer is the caller's choice: that is what keeps the behaviour
+// assertable from a test process, which has no terminal to gate on.
+func TestBuildReportWritesProgress(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	var progress bytes.Buffer
+	if _, err := BuildReport(reportCorpus(t), "test", &progress); err != nil {
+		t.Fatalf("BuildReport: %v", err)
+	}
+	if got := progress.String(); got != "scanning…\ntools…\nattribute…\ncorruption…\n" {
+		t.Errorf("progress = %q, want one line per pass in order", got)
+	}
+}
+
 // TestReportHeaderIsSelfContained checks the header carries what a third party
 // needs to re-run it. A number with no stated provenance is the failure mode
 // this whole command exists to avoid.
 func TestReportHeaderIsSelfContained(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	dir := reportCorpus(t)
-	rep, err := BuildReport(dir, "test")
+	rep, err := BuildReport(dir, "test", nil)
 	if err != nil {
 		t.Fatalf("BuildReport: %v", err)
 	}

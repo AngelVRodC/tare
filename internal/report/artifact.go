@@ -32,20 +32,35 @@ type Report struct {
 // against a Boost history DB that only exists on the machine that ran it, so
 // an artifact built with it could not be reproduced by the skeptic it is
 // written for. `tare corruption --boost-deep` remains available on its own.
-func BuildReport(dir, version string) (Report, error) {
+//
+// progress names each pass as it starts; nil is silent. It is a separate
+// writer from the one the report is rendered to on purpose — the caller sends
+// it to stderr so a redirect still yields a file that is only the report.
+func BuildReport(dir, version string, progress io.Writer) (Report, error) {
 	var (
 		r   Report
 		err error
 	)
+	// Announced before the pass runs, not after: the whole point is that
+	// something appears within 100 ms, and the first pass is the slow one.
+	say := func(pass string) {
+		if progress != nil {
+			fmt.Fprintln(progress, pass)
+		}
+	}
+	say("scanning…")
 	if r.Scan, err = ScanEnvelope(dir, version); err != nil {
 		return Report{}, err
 	}
+	say("tools…")
 	if r.Tools, err = ToolsEnvelope(dir, version); err != nil {
 		return Report{}, err
 	}
+	say("attribute…")
 	if r.Attribute, err = AttributeEnvelope(dir, version); err != nil {
 		return Report{}, err
 	}
+	say("corruption…")
 	if r.Corruption, err = CorruptionEnvelope(dir, version, false); err != nil {
 		return Report{}, err
 	}

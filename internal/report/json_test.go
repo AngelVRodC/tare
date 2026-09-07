@@ -147,6 +147,79 @@ func TestScanEnvelopeCounts(t *testing.T) {
 
 // TestRenderScanReadsEnvelope pins the table to the envelope, so the two can
 // never report different numbers.
+// TestNonTranscriptRowsRenderAndVanishWhenClean pins the reporting half of the
+// journal exclusion: excluded records reach the envelope, the table and the
+// warnings, and they leave no trace at all on a corpus without them.
+//
+// Both halves matter. Records dropped from the event count and absent from the
+// output would be a silent loss; a row of zero on every clean corpus would be
+// a column that says nothing.
+func TestNonTranscriptRowsRenderAndVanishWhenClean(t *testing.T) {
+	corpus := func(t *testing.T, files map[string]string) string {
+		t.Helper()
+		root := t.TempDir()
+		for name, body := range files {
+			path := filepath.Join(root, name)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return root
+	}
+	txLine := `{"type":"user","sessionId":"s1","timestamp":"2026-09-01T00:00:00.000Z"}` + "\n"
+
+	t.Run("journal present", func(t *testing.T) {
+		dir := corpus(t, map[string]string{
+			"proj/sess.jsonl": txLine,
+			"proj/sess/subagents/workflows/wf_x/journal.jsonl": `{"type":"started","key":"v2:a","agentId":"a1"}` + "\n" +
+				`{"type":"result","key":"v2:a","agentId":"a1"}` + "\n",
+		})
+		env, err := ScanEnvelope(dir, "test")
+		if err != nil {
+			t.Fatalf("ScanEnvelope: %v", err)
+		}
+		if got := mustMetric(t, env, "files_non_transcript", "corpus", "").Value; got != 1 {
+			t.Errorf("files_non_transcript = %v, want 1", got)
+		}
+		if got := mustMetric(t, env, "non_transcript_records", "corpus", "").Value; got != 2 {
+			t.Errorf("non_transcript_records = %v, want 2", got)
+		}
+		var buf bytes.Buffer
+		if err := RenderScan(&buf, env); err != nil {
+			t.Fatalf("RenderScan: %v", err)
+		}
+		out := buf.String()
+		for _, want := range []string{"Non-transcript files", "Non-transcript records", "Workflow-tool journal"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output is missing %q\n%s", want, out)
+			}
+		}
+		// Those are journal record types, so the unknown-type warning about
+		// unrecognised transcript events must not fire.
+		if strings.Contains(out, "unknown event type") {
+			t.Errorf("journal record types reported as unknown transcript events\n%s", out)
+		}
+	})
+
+	t.Run("clean corpus omits the rows", func(t *testing.T) {
+		env, err := ScanEnvelope(corpus(t, map[string]string{"proj/sess.jsonl": txLine}), "test")
+		if err != nil {
+			t.Fatalf("ScanEnvelope: %v", err)
+		}
+		for _, name := range []string{"files_non_transcript", "non_transcript_records"} {
+			if m := findMetric(env, name, "corpus", ""); m != nil {
+				t.Errorf("%s = %v, want the row omitted rather than a zero", name, m.Value)
+			}
+		}
+		if strings.Contains(strings.Join(env.Warnings, "\n"), "Workflow-tool journal") {
+			t.Errorf("clean corpus warned about journals: %v", env.Warnings)
+		}
+	})
+}
+
 func TestRenderScanReadsEnvelope(t *testing.T) {
 	env, err := ScanEnvelope(fixtureCorpus(t), "test")
 	if err != nil {

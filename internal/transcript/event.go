@@ -68,14 +68,35 @@ type Event struct {
 //
 // The test is deliberately positive — what a journal record *is*, not what a
 // transcript event is not. A bare "no sessionId" rule would silently swallow
-// any future transcript type that happened to omit it; matching an agentId and
-// a resume key together cannot claim one by accident.
+// any future transcript type that happened to omit it.
 //
 // The definition this excludes against is already in AGENTS.md: a subagent
 // transcript shares the parent sessionId with its own agentId and
 // isSidechain: true. A journal record has none of the three.
+//
+// The `type` conjunct is the load-bearing one, because the two ways this can
+// be wrong are not symmetric. `key` is a generic JSON name, so a rule without
+// the type set rests on a no-collision claim about every field Claude Code
+// might yet add, and a false positive there removes real events from every
+// count in silence. A journal type missing from the set fails the other way:
+// the record stays a transcript event, knownTypes does not recognise it, and
+// `scan` reports it as an unknown type with a warning. A loud miss is
+// recoverable and a silent exclusion is not, so the set is closed.
 func (ev *Event) IsWorkflowJournal() bool {
-	return ev.SessionID == "" && ev.AgentID != "" && ev.ResumeKey != ""
+	return ev.SessionID == "" && ev.AgentID != "" && ev.ResumeKey != "" && journalTypes[ev.Type]
+}
+
+// journalTypes are the record types a Workflow journal writes.
+//
+// Measured on a 41-file, 7-version corpus of 4,388 records: 34 carry a
+// top-level `key` and every one of them is one of these three types. No record
+// carrying a sessionId carried a `key` at all. That sample does not cover the
+// 381-file corpus knownTypes rests on, which is why the type conjunct exists
+// rather than the measurement being treated as sufficient on its own.
+var journalTypes = map[string]bool{
+	"started": true,
+	"result":  true,
+	"failed":  true,
 }
 
 // knownTypes is the set of top-level `type` values measured on the corpus on

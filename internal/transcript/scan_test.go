@@ -177,6 +177,42 @@ func TestWorkflowJournalIsNotATranscript(t *testing.T) {
 	}
 }
 
+// TestJournalClassifierNeedsEveryConjunct is the false-positive gate on the
+// classifier, and the reason the rule keys on `type` as well as on shape.
+//
+// `key` is a generic JSON name. A rule of no-sessionId + agentId + key alone
+// would rest on a claim about every field Claude Code might yet add, and a
+// false positive there drops real events from every count in silence. Each
+// fixture here is one conjunct short of a journal record and must survive as a
+// transcript event.
+func TestJournalClassifierNeedsEveryConjunct(t *testing.T) {
+	for name, line := range map[string]string{
+		// The case the type conjunct exists for: journal shape, foreign type.
+		"foreign type with key and agentId": `{"type":"checkpoint","key":"v2:abc","agentId":"a1"}`,
+		"journal type but has a sessionId":  `{"type":"result","key":"v2:abc","agentId":"a1","sessionId":"s1"}`,
+		"journal type but no agentId":       `{"type":"result","key":"v2:abc"}`,
+		"journal type but no key":           `{"type":"result","agentId":"a1"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeCorpus(t, map[string]string{"a.jsonl": line + "\n"})
+			visited := 0
+			stats, err := Scan(dir, func(*Event) { visited++ })
+			if err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			if visited != 1 {
+				t.Errorf("visited %d events, want 1 — this is not a journal record", visited)
+			}
+			if stats.Files != 1 || stats.Lines != 1 {
+				t.Errorf("Files = %d, Lines = %d, want 1 and 1", stats.Files, stats.Lines)
+			}
+			if stats.NonTranscriptRecords != 0 {
+				t.Errorf("NonTranscriptRecords = %d, want 0", stats.NonTranscriptRecords)
+			}
+		})
+	}
+}
+
 // TestEmptyAndBrokenFilesStayTranscripts is the other half of the rule above:
 // a file is reclassified only when it holds journal records AND no transcript
 // line. An empty transcript and an undecodable one are findings, and quietly

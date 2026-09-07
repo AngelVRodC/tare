@@ -469,6 +469,64 @@ sessions against 141 transcripts still on disk: 3 gone.
 | `tare: opencode query failed: opencode.db-shm is absent, so sqlite3 has to create it` | The directory is not writable. Reading needs to create `-shm`; copy all three files somewhere writable, or archive `-shm` alongside the other two. |
 | The `IMAGES` and `PRODUCED` columns are blank under `--harness opencode` | Working as intended — blank is unmeasured, and printing `0` would be a claim tare cannot support. See [What OpenCode does not record](#what-opencode-does-not-record). |
 
+## Using the skill
+
+This repo ships an agent skill: a short playbook that tells a coding agent how to
+drive `tare` — probe the corpus, pick the command, read the output, and turn a
+finding into an actionable. It is plain Markdown living at
+[`.agents/skills/tare/SKILL.md`](.agents/skills/tare/SKILL.md) (under 500 lines),
+with metric vocabulary and per-harness notes in its `references/` folder.
+
+### Install — copy-paste (primary)
+
+From a clone of this repo, link the skill into any project:
+
+```bash
+git clone https://github.com/AngelVRodC/tare
+cd /path/to/your-project
+mkdir -p .agents/skills
+ln -s /path/to/tare/.agents/skills/tare .agents/skills/tare
+```
+
+Claude Code reads only `.claude/skills/`, so link there too:
+
+```bash
+mkdir -p .claude/skills
+ln -s ../../.agents/skills/tare .claude/skills/tare
+```
+
+The relative form matters: a relative symlink survives moving the project; an
+absolute one does not.
+
+### Install — one command
+
+```bash
+npx skills add AngelVRodC/tare --skill tare
+```
+
+This resolves the tracked `.agents/skills/tare` tree and links it for the
+harnesses it detects.
+
+### Version drift
+
+The skill carries `metadata.version` in its frontmatter. If you upgrade `tare`
+and the CLI's output columns or metric names change, re-sync the skill — it
+quotes `usage()` strings, and a stale skill quotes stale flags.
+
+### What the skill runs
+
+Every command it prescribes parses against `usage()`:
+
+| Question | Command |
+|---|---|
+| Which tooling costs the most context bytes? | `tare tools` |
+| What share of tokens does a skill/plugin own? | `tare attribute --all` |
+| Where are the empty and truncated tool results? | `tare corruption --all` |
+
+Flags go after the command. `--harness` exists on `tools` only; `--top N` and
+`--all` exist on `attribute` and `corruption` only. The skill never hardcodes a
+percentage: shares change with your corpus, so it reads them from your run.
+
 ## Contributing
 
 Issues and pull requests are welcome. The most useful contribution is a
@@ -478,7 +536,9 @@ transcript shape this tool gets wrong — Claude Code has written this corpus in
 If you work with a coding agent, [`AGENTS.md`](AGENTS.md) is the project's decision
 record — the reasoning behind the invariants below, the traps that cost a
 measurement to find, and the gates a change must not break. `CLAUDE.md` is a
-symlink to it for Claude Code, which reads that name instead.
+real three-line file whose only directive is `@AGENTS.md`, Anthropic's
+documented import syntax, so Claude Code reads the same record under its own
+name.
 
 ### Getting set up
 

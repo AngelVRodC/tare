@@ -2,17 +2,34 @@
 
 Guidance for any coding agent working in this repository.
 
-`AGENTS.md` is the canonical file. `CLAUDE.md` is a symlink to it, because Claude Code reads
-`CLAUDE.md` and not `AGENTS.md`; OpenCode, Codex and Cursor read `AGENTS.md` directly, and
-OpenCode falls back to `CLAUDE.md` only when `AGENTS.md` is absent. **Edit `AGENTS.md`, never
-`CLAUDE.md`** — Claude Code reads through the symlink but refuses to write through it
-(`anthropics/claude-code#66559`, open), so an edit aimed at `CLAUDE.md` fails with
-`Refusing to write through symlink`. Machine-specific notes go in `CLAUDE.local.md`, which
-stays gitignored.
+`AGENTS.md` is the canonical file and the one to edit. `CLAUDE.md` is a real three-line file
+whose only directive is `@AGENTS.md` — Anthropic's documented import syntax — because Claude
+Code reads `CLAUDE.md` and not `AGENTS.md`; OpenCode, Codex and Cursor read `AGENTS.md`
+directly, and OpenCode falls back to `CLAUDE.md` only when `AGENTS.md` is absent. **Edit
+`AGENTS.md`, never `CLAUDE.md`** — the import file exists so Claude Code resolves the same
+content under its own name, and it must stay exactly those three lines. Machine-specific
+notes go in `CLAUDE.local.md`, which stays gitignored.
 
 `README.md` is for humans and is the user-facing contract; this file is the decision record.
 Where they overlap — the invariants, the verification commands — `README.md` carries the
 public wording and this file carries the reasoning.
+
+## Publishing decision: agent-facing files are repo content
+
+Everything a model reads from this repo — `AGENTS.md`, `CLAUDE.md`, and the skill tree under
+`.agents/skills/tare/` — is git-tracked and ships in the public repository. It is published
+documentation read by agents on machines nobody audited, not personal notes. Three
+consequences, decided 2026-09-06:
+
+1. **Nothing machine-specific in a tracked agent file.** Toolchain quirks, local paths and
+   personal preferences live in `CLAUDE.local.md`, which is gitignored and read only by
+   Claude Code on this machine.
+2. **The symlink form was rejected.** `CLAUDE.md` was a symlink to `AGENTS.md`; Claude Code
+   reads through a symlink but refuses to write through one (`anthropics/claude-code#66559`,
+   open), so every edit aimed at `CLAUDE.md` failed with `Refusing to write through symlink`.
+3. **The import form was chosen.** A real three-line `CLAUDE.md` containing `@AGENTS.md` is
+   Anthropic's documented bridge: same content through Claude Code's own name, no
+   write-refusal, and no dependency on symlink support in Windows clones.
 
 
 ## Repository state

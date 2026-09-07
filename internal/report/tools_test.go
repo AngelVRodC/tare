@@ -155,25 +155,20 @@ func TestRollupAndMCPSplit(t *testing.T) {
 	}
 }
 
-// TestSplitMCP covers the name classification on its own, including the names
-// that must not be split.
-func TestSplitMCP(t *testing.T) {
-	cases := []struct {
-		name, server, tool string
-		ok                 bool
-	}{
-		{"mcp__context7__query-docs", "context7", "query-docs", true},
-		{"mcp__plugin_sre_jaeger-qa__find-traces", "plugin_sre_jaeger-qa", "find-traces", true},
-		{"mcp__srv__a__b", "srv", "a__b", true}, // only the first two separators are structural
-		{"Bash", "", "", false},
-		{"mcp__nosuffix", "", "", false},
-		{"mcp____tool", "", "", false},
+// TestMCPServer covers the name classification on its own, including the names
+// that carry no server.
+func TestMCPServer(t *testing.T) {
+	cases := []struct{ name, server string }{
+		{"mcp__context7__query-docs", "context7"},
+		{"mcp__plugin_sre_jaeger-qa__find-traces", "plugin_sre_jaeger-qa"},
+		{"mcp__srv__a__b", "srv"}, // only the first two separators are structural
+		{"Bash", ""},
+		{"mcp__nosuffix", ""},
+		{"mcp____tool", ""},
 	}
 	for _, tc := range cases {
-		server, tool, ok := splitMCP(tc.name)
-		if ok != tc.ok || server != tc.server || tool != tc.tool {
-			t.Errorf("splitMCP(%q) = (%q,%q,%v), want (%q,%q,%v)",
-				tc.name, server, tool, ok, tc.server, tc.tool, tc.ok)
+		if server := mcpServer(tc.name); server != tc.server {
+			t.Errorf("mcpServer(%q) = %q, want %q", tc.name, server, tc.server)
 		}
 	}
 }

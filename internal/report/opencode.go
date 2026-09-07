@@ -158,7 +158,7 @@ func openCodeFailureCause(db string) string {
 // openCodeServers reads the configured MCP server names out of opencode.json.
 //
 // The order is a total one — longest name first, then lexically — for two
-// reasons: splitOpenCodeMCP needs longest-first so a server whose name prefixes
+// reasons: openCodeServer needs longest-first so a server whose name prefixes
 // another cannot claim its tools, and a tiebreak keeps the result reproducible
 // when Go randomises the map range that produced it.
 func openCodeServers(configPath string) ([]string, error) {
@@ -177,20 +177,21 @@ func openCodeServers(configPath string) ([]string, error) {
 	}), nil
 }
 
-// splitOpenCodeMCP splits an OpenCode MCP tool name into its server and tool.
+// openCodeServer names the server owning an OpenCode MCP tool name, or "" when
+// no configured server claims it.
 //
-// OpenCode joins the two with a *single* underscore and tool names contain
-// underscores of their own, so `engram_mem_search` splits as plausibly into
-// `engram_mem`/`search`. There is no way to read the boundary off the name —
-// splitMCP's `mcp__<server>__<tool>` trick does not port — so the server list
-// is the only authority, and it must arrive longest-first.
-func splitOpenCodeMCP(name string, servers []string) (server, tool string, ok bool) {
+// OpenCode joins server and tool with a *single* underscore and tool names
+// contain underscores of their own, so `engram_mem_search` splits as plausibly
+// into `engram_mem`/`search`. There is no way to read the boundary off the
+// name — mcpServer's `mcp__<server>__<tool>` trick does not port — so the
+// server list is the only authority, and it must arrive longest-first.
+func openCodeServer(name string, servers []string) string {
 	for _, s := range servers {
 		if rest, found := strings.CutPrefix(name, s+"_"); found && rest != "" {
-			return s, rest, true
+			return s
 		}
 	}
-	return "", "", false
+	return ""
 }
 
 // openCodeConfigPath is where OpenCode keeps its MCP server list. It is not
@@ -272,9 +273,9 @@ func openCodeEnvelope(dir, version string, rows []openCodeToolRow, span openCode
 			unknownTool[r.Tool] = true
 			errorsKnown = false
 		}
-		// splitOpenCodeMCP matches nothing when the server list is empty, so a
+		// openCodeServer matches nothing when the server list is empty, so a
 		// missing config yields no mcp_server rows by construction.
-		if server, _, ok := splitOpenCodeMCP(r.Tool, servers); ok {
+		if server := openCodeServer(r.Tool, servers); server != "" {
 			accumulate(bucket(byServer, server), r)
 			if r.Errors == nil {
 				unknownServer[server] = true

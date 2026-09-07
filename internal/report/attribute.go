@@ -110,7 +110,7 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 	bld := newBuilder(dir, version, "attribute")
 
 	scanStats, err := transcript.Scan(dir, func(ev *transcript.Event) {
-		bld.see(ev)
+		bld.seeTime(ev.Timestamp)
 		if ev.SessionID != "" {
 			sessions[ev.SessionID] = true
 		}
@@ -447,7 +447,7 @@ func percent(part, whole int64) float64 {
 func RenderAttribute(w io.Writer, env Envelope, top int) error {
 	renderHeader(w, env)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	writeCorpus(tw, env)
+	writeCorpus(tw, env, "")
 
 	for _, d := range attributionDims {
 		writeRebillTable(tw, env, d.name, top)

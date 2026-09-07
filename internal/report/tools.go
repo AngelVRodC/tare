@@ -51,7 +51,7 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 	b := newBuilder(dir, version, "tools")
 
 	scanStats, err := transcript.Scan(dir, func(ev *transcript.Event) {
-		b.see(ev)
+		b.seeTime(ev.Timestamp)
 		uses, results := ev.Blocks()
 		for _, u := range uses {
 			useBlocks++
@@ -105,7 +105,7 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 			}
 
 			bucket(tools, name).add(r.ContextBytes, r.ImageBytes, produced, r.IsError)
-			if server, _, isMCP := splitMCP(name); isMCP {
+			if server := mcpServer(name); server != "" {
 				bucket(servers, server).add(r.ContextBytes, r.ImageBytes, produced, r.IsError)
 			}
 		}
@@ -147,19 +147,20 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 	return b.done(scanStats), nil
 }
 
-// splitMCP splits an `mcp__<server>__<tool>` name into its server and tool.
-// A tool name containing further `__` stays intact — only the first two
-// separators are structural.
-func splitMCP(name string) (server, tool string, ok bool) {
-	const prefix = "mcp__"
-	if !strings.HasPrefix(name, prefix) {
-		return "", "", false
+// mcpServer names the server in an `mcp__<server>__<tool>` tool name, or ""
+// when the name is not one. Only the first two separators are structural, so a
+// tool name carrying further `__` stays whole — and the tool half is not
+// returned at all, because the only rollup keyed off this is per server.
+func mcpServer(name string) string {
+	rest, isMCP := strings.CutPrefix(name, "mcp__")
+	if !isMCP {
+		return ""
 	}
-	server, tool, found := strings.Cut(name[len(prefix):], "__")
-	if !found || server == "" {
-		return "", "", false
+	server, _, found := strings.Cut(rest, "__")
+	if !found {
+		return ""
 	}
-	return server, tool, true
+	return server
 }
 
 // statMetrics emits up to five rows per key, heaviest context first, so the
@@ -202,7 +203,7 @@ func statMetrics(dimension string, stats map[string]*toolStat, omit ...string) [
 func RenderTools(w io.Writer, env Envelope) error {
 	renderHeader(w, env)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	writeCorpus(tw, env)
+	writeCorpus(tw, env, "")
 	// mcp_server rows are a subset of tool rows, so their shares are of all
 	// context rather than of each other, and do not sum to 100.
 	context := corpusValue(env, "context_bytes")

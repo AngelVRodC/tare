@@ -25,7 +25,7 @@ func ScanEnvelope(dir, version string) (Envelope, error) {
 	b := newBuilder(dir, version, "scan")
 
 	stats, err := transcript.Scan(dir, func(ev *transcript.Event) {
-		b.see(ev)
+		b.seeTime(ev.Timestamp)
 		types[ev.Type]++
 		if ev.Version != "" {
 			versions[ev.Version]++
@@ -254,15 +254,17 @@ func label(name string) string {
 }
 
 // writeCorpus prints the keyless corpus-wide rows as a three-column block.
-func writeCorpus(tw io.Writer, env Envelope) {
-	fmt.Fprint(tw, "\nCORPUS\t\t\n")
+// pad carries the extra empty cells a wider table below it needs; a table of
+// exactly three columns passes "".
+func writeCorpus(tw io.Writer, env Envelope, pad string) {
+	fmt.Fprintf(tw, "\nCORPUS\t\t%s\n", pad)
 	uniform := uniformDerivation(env.Metrics, "corpus")
 	for _, m := range env.Metrics {
 		if m.Dimension == "corpus" {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", label(m.Name), formatValue(m.Value, m.Unit), derivationCell(m, uniform))
+			fmt.Fprintf(tw, "%s\t%s\t%s%s\n", label(m.Name), formatValue(m.Value, m.Unit), derivationCell(m, uniform), pad)
 		}
 	}
-	writeDerivationFooter(tw, uniform, "\t\t")
+	writeDerivationFooter(tw, uniform, "\t\t"+pad)
 }
 
 // day trims an RFC3339 timestamp to its date. RFC3339 sorts lexically, so no

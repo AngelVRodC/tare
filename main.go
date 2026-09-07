@@ -67,7 +67,7 @@ func run(args []string, out io.Writer) error {
 	// prints it, and a help request is answered below on stdout. Letting the
 	// flag package also write its own copy would double every message.
 	fs.SetOutput(io.Discard)
-	// Empty, not defaultDir(): the default depends on --harness, parsed in the
+	// Empty, not a real path: the default depends on --harness, parsed in the
 	// same pass. resolveDir applies it after. usage() carries it for the user.
 	dirFlag := fs.String("dir", "", "transcript root")
 	asJSON := fs.Bool("json", false, "emit the JSON envelope instead of a table")
@@ -212,37 +212,27 @@ func isTTY() bool {
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
-// defaultDir is where Claude Code keeps its transcripts.
-func defaultDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".claude", "projects")
+// underHome joins parts below the user's home directory. A missing home falls
+// back to the relative path rather than an error, so the reader that gets
+// handed it reports "not readable" against a path the user can see instead of
+// the command failing before it starts.
+func underHome(parts ...string) string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(append([]string{home}, parts...)...)
 	}
-	return filepath.Join(home, ".claude", "projects")
-}
-
-// defaultOpenCodeDir is where OpenCode keeps opencode.db. The fallback mirrors
-// defaultDir exactly: a relative path rather than an error, so a missing home
-// directory produces a "database not readable" message naming a path the user
-// can see, not a failure before the command starts.
-func defaultOpenCodeDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".local", "share", "opencode")
-	}
-	return filepath.Join(home, ".local", "share", "opencode")
+	return filepath.Join(parts...)
 }
 
 // resolveDir applies the per-harness default to an unset --dir and rejects an
 // unknown harness. Split out of run so both are checked without reading a
 // corpus, which is also what keeps the test for them fast.
 func resolveDir(harness, dir string) (string, error) {
-	var byHarness func() string
+	var byHarness string
 	switch harness {
 	case harnessClaudeCode:
-		byHarness = defaultDir
+		byHarness = underHome(".claude", "projects")
 	case harnessOpenCode:
-		byHarness = defaultOpenCodeDir
+		byHarness = underHome(".local", "share", "opencode")
 	default:
 		return "", fmt.Errorf("unknown --harness %q: valid values are %s and %s",
 			harness, harnessClaudeCode, harnessOpenCode)
@@ -252,7 +242,7 @@ func resolveDir(harness, dir string) (string, error) {
 	if dir != "" {
 		return dir, nil
 	}
-	return byHarness(), nil
+	return byHarness, nil
 }
 
 func usage(w io.Writer) {

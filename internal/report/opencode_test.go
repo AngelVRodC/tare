@@ -73,32 +73,29 @@ func TestOpenCodeRowsRejectsNonJSON(t *testing.T) {
 	}
 }
 
-func TestSplitOpenCodeMCP(t *testing.T) {
+func TestOpenCodeServer(t *testing.T) {
 	// As openCodeServers returns them: longest first, then lexically.
 	servers := []string{"context7", "engram"}
 	nested := []string{"engram_mem", "engram"}
 
 	cases := []struct {
-		name         string
-		servers      []string
-		server, tool string
-		ok           bool
+		name    string
+		servers []string
+		server  string
 	}{
-		{"engram_mem_search", servers, "engram", "mem_search", true},
-		{"context7_query-docs", servers, "context7", "query-docs", true},
+		{"engram_mem_search", servers, "engram"},
+		{"context7_query-docs", servers, "context7"},
 		// Longest-first is what stops `engram` claiming a tool that belongs to
 		// `engram_mem`; lexical order alone would get this backwards.
-		{"engram_mem_search", nested, "engram_mem", "search", true},
-		{"read", servers, "", "", false},
+		{"engram_mem_search", nested, "engram_mem"},
+		{"read", servers, ""},
 		// A bare server name is not a call to one of its tools.
-		{"engram", servers, "", "", false},
-		{"engram_", servers, "", "", false},
+		{"engram", servers, ""},
+		{"engram_", servers, ""},
 	}
 	for _, c := range cases {
-		server, tool, ok := splitOpenCodeMCP(c.name, c.servers)
-		if server != c.server || tool != c.tool || ok != c.ok {
-			t.Errorf("splitOpenCodeMCP(%q, %v) = %q, %q, %v; want %q, %q, %v",
-				c.name, c.servers, server, tool, ok, c.server, c.tool, c.ok)
+		if server := openCodeServer(c.name, c.servers); server != c.server {
+			t.Errorf("openCodeServer(%q, %v) = %q; want %q", c.name, c.servers, server, c.server)
 		}
 	}
 }

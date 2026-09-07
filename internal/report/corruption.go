@@ -37,7 +37,7 @@ func CorruptionEnvelope(dir, version string) (Envelope, error) {
 	b := newBuilder(dir, version, "corruption")
 
 	scanStats, err := transcript.Scan(dir, func(ev *transcript.Event) {
-		b.see(ev)
+		b.seeTime(ev.Timestamp)
 		uses, res := ev.Blocks()
 		for _, u := range uses {
 			names[u.ID] = u.Name
@@ -136,27 +136,6 @@ func corruptMetrics(tools map[string]*corruptStat) []Metric {
 	return out
 }
 
-// writeScalars prints one keyless dimension as name/value/derivation rows.
-// A dimension with no rows prints no header: an absent section is how "this
-// source was unavailable" reads, and it is never a table of zeros.
-func writeScalars(tw io.Writer, env Envelope, dimension string) {
-	var wrote bool
-	uniform := uniformDerivation(env.Metrics, dimension)
-	for _, m := range env.Metrics {
-		if m.Dimension != dimension || m.Key != "" {
-			continue
-		}
-		if !wrote {
-			fmt.Fprintf(tw, "\n%s\t\t\t\t\t\n", strings.ToUpper(dimension))
-			wrote = true
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t\t\t\n", label(m.Name), formatValue(m.Value, m.Unit), derivationCell(m, uniform))
-	}
-	if wrote {
-		writeDerivationFooter(tw, uniform, "\t\t\t\t\t")
-	}
-}
-
 // RenderCorruption prints the envelope as a table. Like every other renderer
 // it reads only the envelope, so the table and `--json` cannot disagree.
 //
@@ -165,7 +144,8 @@ func writeScalars(tw io.Writer, env Envelope, dimension string) {
 func RenderCorruption(w io.Writer, env Envelope, top int) error {
 	renderHeader(w, env)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	writeScalars(tw, env, "corpus")
+	// Three padding cells: the tool table below is six columns wide.
+	writeCorpus(tw, env, "\t\t\t")
 
 	if rows := groupRows(env.Metrics, "tool"); len(rows) > 0 {
 		fmt.Fprint(tw, "\nTOOL\tCALLS\tERRORS\tERROR %\tEMPTY\tTRUNCATED\tSHARE\t\n")

@@ -151,6 +151,23 @@ row agrees it collapses to the single footer line you see above — a column tha
 repeats one word on all sixty rows says nothing. `--json` tags every row either
 way.
 
+Tool names shaped `mcp__plugin_<plugin>_<server>__<tool>` are MCP servers
+provided by a plugin, and get a per-plugin rollup in a third table, `PLUGIN`,
+after `MCP_SERVER`. The plugin names come from `enabledPlugins` in
+`~/.claude/settings.json` — user-scope config, read from home and never from
+`--dir`, and a name authority only: the value behind an entry (including a
+disabled plugin's `false`) never filters, because a disabled plugin's tools
+still ran and still cost bytes. It is the same kind of split as `MCP_SERVER` —
+a subset of the tool rows, so its shares do not sum to 100 either.
+
+A segment no configured name claims lands in one `plugin (unresolved)` row,
+with a warning naming the segments — the bytes still arrive, never dropped.
+Project- and marketplace-scoped plugins are absent from that file, so this is
+how they show up: unresolved, not missing. Longest-name-first matching can
+mis-split a contrived name (a server literally named `plugin_notion` under a
+plugin called `my`), but every byte still lands in some plugin bucket or in
+unresolved.
+
 That output is one live run. `~/.claude/projects` grows while you read it, so
 your own numbers will differ — see [Reproducibility](#reproducibility).
 
@@ -409,6 +426,7 @@ its own error bars.
 | Claude Code prunes transcripts | Sessions Claude Code counted are gone from disk; `tare scan` reports the gap |
 | The same API response is written to the transcript many times | Responses are deduplicated by `message.id` before any token is summed |
 | A truncation marker is a literal substring match | A result that quotes one is a false positive; the named tools have to be checked |
+| Plugin names come from user-scope `settings.json` only | Project- and marketplace-scoped plugins are invisible to the authority, so their segments report as `plugin (unresolved)` rather than by name |
 | OpenCode records no image payload and no pre-truncation output size | Those columns are blank under `--harness opencode`, and blank means unmeasured — see [What OpenCode does not record](#what-opencode-does-not-record) |
 
 ## Dependencies

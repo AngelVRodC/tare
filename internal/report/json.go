@@ -16,15 +16,25 @@ const (
 	Estimated = "estimated"
 )
 
+// SchemaVersion is the version of the envelope shape on the wire. Absence of
+// the field means the pre-0.3.0 shape; 1 means the 0.3.0 shape (which added
+// the `microdollars` unit). Contract: any future change to the envelope shape
+// or unit semantics bumps this in the same release — never ships under an
+// unchanged value. It must land before, never after, the shape change.
+const SchemaVersion = 1
+
 // Envelope is the one `--json` shape, emitted by every subcommand so a
 // consumer (and the Phase 5 reproducibility gate) has a single contract.
 type Envelope struct {
-	Tool     string   `json:"tool"`
-	Version  string   `json:"version"`
-	Command  string   `json:"command"`
-	Corpus   Corpus   `json:"corpus"`
-	Metrics  []Metric `json:"metrics"`
-	Warnings []string `json:"warnings"`
+	Tool string `json:"tool"`
+	// SchemaVersion is the SECOND field on purpose: struct order is
+	// serialisation order, so its position is consumer-visible.
+	SchemaVersion int      `json:"schema_version"`
+	Version       string   `json:"version"`
+	Command       string   `json:"command"`
+	Corpus        Corpus   `json:"corpus"`
+	Metrics       []Metric `json:"metrics"`
+	Warnings      []string `json:"warnings"`
 }
 
 // Corpus identifies the input a run measured.
@@ -34,6 +44,11 @@ type Corpus struct {
 	Bytes int64  `json:"bytes"`
 	From  string `json:"from"`
 	To    string `json:"to"`
+	// Since/Until are the --since/--until bounds a windowed run was measured
+	// with, empty when unset. Additive: consumers that ignore them stay
+	// correct, and merge propagates them via envs[0].
+	Since string `json:"since"`
+	Until string `json:"until"`
 }
 
 // Metric is one flat row. Dimension plus Key say what it is about; Derivation
@@ -115,12 +130,13 @@ type builder struct {
 
 func newBuilder(dir, version, command string) *builder {
 	return &builder{env: Envelope{
-		Tool:     "tare",
-		Version:  version,
-		Command:  command,
-		Corpus:   Corpus{Dir: dir},
-		Metrics:  []Metric{},
-		Warnings: []string{},
+		Tool:          "tare",
+		SchemaVersion: SchemaVersion,
+		Version:       version,
+		Command:       command,
+		Corpus:        Corpus{Dir: dir},
+		Metrics:       []Metric{},
+		Warnings:      []string{},
 	}}
 }
 

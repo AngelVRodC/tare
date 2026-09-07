@@ -79,12 +79,13 @@ type seenMetric struct{ value, command string }
 // artifact that hides it is worth nothing.
 func merge(dir, version string, envs []Envelope) Envelope {
 	out := Envelope{
-		Tool:     "tare",
-		Version:  version,
-		Command:  "report",
-		Corpus:   Corpus{Dir: dir},
-		Metrics:  []Metric{},
-		Warnings: []string{},
+		Tool:          "tare",
+		SchemaVersion: SchemaVersion,
+		Version:       version,
+		Command:       "report",
+		Corpus:        Corpus{Dir: dir},
+		Metrics:       []Metric{},
+		Warnings:      []string{},
 	}
 	seen := map[metricID]seenMetric{}
 	for _, env := range envs {
@@ -121,6 +122,8 @@ func merge(dir, version string, envs []Envelope) Envelope {
 	out.Corpus.Bytes = envs[0].Corpus.Bytes
 	out.Corpus.From = envs[0].Corpus.From
 	out.Corpus.To = envs[0].Corpus.To
+	out.Corpus.Since = envs[0].Corpus.Since
+	out.Corpus.Until = envs[0].Corpus.Until
 	for _, env := range envs[1:] {
 		if env.Corpus.Files != out.Corpus.Files || env.Corpus.Bytes != out.Corpus.Bytes {
 			out.Warnings = append(out.Warnings, fmt.Sprintf(

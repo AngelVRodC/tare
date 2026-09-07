@@ -30,7 +30,14 @@ One value per corpus, no key:
   `responses_duplicate`, `fresh_tokens`, `rebilled_tokens`, `output_tokens`,
   `thinking_tokens`, `rebill_multiplier`, session and cost-state coverage
   counters, `attachment_events`, `attachment_bytes`.
-- `corruption` — per-tool error, empty, and truncation totals.
+- `corruption` — per-tool error, denial, failure, empty and truncation
+  totals. `errors` counts every `is_error` result; `denied` and `failures`
+  partition it, so `denied + failures == errors` exactly. A denial is a call
+  the harness blocked before the tool ran, which is a policy finding rather
+  than evidence the tool altered its output — read `failures` when the
+  question is whether a tool is broken. `denial_kind` keys the denials by
+  Claude Code's own `toolDenialKind` (`permission-rule`, `user-rejected`).
+  Only `corruption` splits them: `tools` reports `errors` alone.
 
 ## Keyed dimensions
 

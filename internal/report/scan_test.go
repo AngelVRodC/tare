@@ -115,10 +115,6 @@ func TestLabelFallsThrough(t *testing.T) {
 		// has to say that — "Retention gap" only restates the subtraction.
 		{"retention_gap", "Sessions no longer on disk"},
 		{"files_top_level", "Top-level sessions"},
-		// The sample and the complete table share one shape; the label must
-		// keep the word that tells them apart.
-		{"filtered_response_bytes", "Bytes after filtering"},
-		{"sampled_filtered_response_bytes", "Bytes after filtering, sampled"},
 		// Unmapped: a new metric, and a key that must never be rewritten.
 		{"some_future_metric", "some_future_metric"},
 		{"mcp__context7__query-docs", "mcp__context7__query-docs"},

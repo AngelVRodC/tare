@@ -62,9 +62,8 @@ type openCodeSpan struct {
 }
 
 // openCodeRows decodes what sqlite3 -json printed and folds the per-group
-// min/max into one span. Split out from the shell-out, exactly as
-// boostReportMetrics is, so the decode contract is testable with no sqlite3 on
-// PATH.
+// min/max into one span. Split out from the shell-out so the decode contract
+// is testable with no sqlite3 on PATH.
 //
 // Empty output is an empty database, not a failure: sqlite3 prints nothing at
 // all rather than `[]` when a query matches no rows.
@@ -90,7 +89,7 @@ func openCodeRows(out []byte) ([]openCodeToolRow, openCodeSpan, error) {
 
 // openCodeRead runs the rollup against the OpenCode database.
 //
-// Unlike Boost, this is the command's only data source, so a missing sqlite3, a
+// The database is the command's only data source, so a missing sqlite3, a
 // missing database or an unreadable reply is an error rather than a degraded
 // envelope: there is nothing left to report.
 // The size comes back from the same stat that proves the file is readable. A
@@ -120,7 +119,7 @@ func openCodeRead(dir string) (rows []openCodeToolRow, span openCodeSpan, dbSize
 // disk beside it rather than from guessing: telling a user to recreate a file
 // already sitting next to their database is the same over-claim the rest of
 // this file exists to prevent. Split out of openCodeRead so it is testable with
-// no sqlite3 on PATH, exactly as openCodeRows and boostReportMetrics are.
+// no sqlite3 on PATH, exactly as openCodeRows is.
 //
 // Measured 2026-09-06, every failing case returning error 14:
 //
@@ -231,9 +230,8 @@ func OpenCodeToolsEnvelope(dir, version string) (Envelope, error) {
 	return openCodeEnvelope(dir, version, rows, span, servers, serverErr, dbSize), nil
 }
 
-// openCodeEnvelope is the arithmetic half, split from the shell-out exactly as
-// boostReportMetrics is, so the rollup→envelope contract is testable with no
-// sqlite3 on PATH.
+// openCodeEnvelope is the arithmetic half, split from the shell-out so the
+// rollup→envelope contract is testable with no sqlite3 on PATH.
 func openCodeEnvelope(dir, version string, rows []openCodeToolRow, span openCodeSpan,
 	servers []string, serverErr error, dbSize int64) Envelope {
 	b := newBuilder(dir, version, "tools")

@@ -141,8 +141,8 @@ func TestOpenCodeReadSkipsWithoutSqlite3(t *testing.T) {
 	if err == nil {
 		t.Fatal("openCodeRead succeeded with no sqlite3 on PATH")
 	}
-	// Unlike Boost, this is the only data source, so the error has to name what
-	// is missing rather than degrade to an empty report.
+	// The database is the only data source, so the error has to name what is
+	// missing rather than degrade to an empty report.
 	if !strings.Contains(err.Error(), "sqlite3") {
 		t.Errorf("error %q does not name sqlite3", err)
 	}
@@ -192,8 +192,8 @@ func TestOpenCodeRowsNullErrorsIsNotZero(t *testing.T) {
 }
 
 // openCodeFixtureEnvelope builds the envelope the measured rollup produces,
-// with no sqlite3, no database and no config file involved — the same split
-// boostReportMetrics uses to keep its arithmetic testable.
+// with no sqlite3, no database and no config file involved — the same
+// shell-out/arithmetic split openCodeRows relies on to stay testable.
 func openCodeFixtureEnvelope(t *testing.T, servers []string, serverErr error) Envelope {
 	t.Helper()
 	rows, span, err := openCodeRows([]byte(openCodeFixture))

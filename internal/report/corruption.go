@@ -25,13 +25,10 @@ type corruptStat struct {
 // the way to the model: per-tool error rate, results that arrived empty
 // without being externalised, and truncation markers a tool wrote itself.
 //
-// It then adds the Boost counterfactual — what a filtering layer removed —
-// and states plainly which path that came from, because "Boost is not
-// installed" and "Boost removed nothing" are different findings.
-//
 // One streaming pass, same as every other command. Only the tool_use id → name
-// map is retained, because the Boost per-call join needs it.
-func CorruptionEnvelope(dir, version string, deep bool) (Envelope, error) {
+// map is retained, because a tool_result names an id and never the tool that
+// produced it, so every rate above is a join away from being unattributable.
+func CorruptionEnvelope(dir, version string) (Envelope, error) {
 	names := map[string]string{} // tool_use_id → tool name
 	tools := map[string]*corruptStat{}
 	markers := map[string]int64{}
@@ -105,17 +102,11 @@ func CorruptionEnvelope(dir, version string, deep bool) (Envelope, error) {
 		b.rows(MeasuredMetric("truncated_results", "truncation_marker", m, markers[m], "calls"))
 	}
 
-	boostRows, boostWarnings := boostSection(names, deep)
-	b.rows(boostRows...)
-
 	if totals.Truncated > 0 {
 		b.warn("%d results carry a truncation marker; Claude Code externalises rather than truncates, "+
 			"so the cut came from the tool. Markers are literal substring matches, "+
 			"so a result quoting one is a false positive — check the named tools",
 			totals.Truncated)
-	}
-	for _, w := range boostWarnings {
-		b.warn("%s", w)
 	}
 	return b.done(scanStats), nil
 }
@@ -175,9 +166,6 @@ func RenderCorruption(w io.Writer, env Envelope, top int) error {
 	renderHeader(w, env)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	writeScalars(tw, env, "corpus")
-	writeScalars(tw, env, "boost")
-	writeScalars(tw, env, "boost_mcp_sample")
-	writeScalars(tw, env, "boost_mcp_deep")
 
 	if rows := groupRows(env.Metrics, "tool"); len(rows) > 0 {
 		fmt.Fprint(tw, "\nTOOL\tCALLS\tERRORS\tERROR %\tEMPTY\tTRUNCATED\tSHARE\t\n")
@@ -201,24 +189,6 @@ func RenderCorruption(w io.Writer, env Envelope, top int) error {
 		for _, r := range rows {
 			fmt.Fprintf(tw, "%s\t%s\t\t\t\t\n", r.key, r.cell("truncated_results"))
 		}
-	}
-
-	// Only the filters that actually fired are worth a line; the envelope
-	// carries all of them, and the line under the table says how many are
-	// silent and how to see them.
-	if rows := groupRows(env.Metrics, "boost_filter"); len(rows) > 0 {
-		fmt.Fprint(tw, "\nBOOST_FILTER\tEVENTS\tTOKENS BEFORE\tTOKENS AFTER\tSAVED\tSAVED %\tRETRIEVES\n")
-		shown, total := truncate(rows, top)
-		for _, r := range shown {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
-				r.cell("event_count"),
-				r.cell("tokens_before"),
-				r.cell("tokens_after"),
-				r.cell("saved_tokens"),
-				r.cell("saved_rate_percent"),
-				r.cell("retrieve_count"))
-		}
-		writeTruncation(tw, len(shown), total, "boost_filter")
 	}
 	return renderTail(w, tw, env)
 }

@@ -541,10 +541,9 @@ func truncate(rows []row, top int) (shown []row, total int) {
 // writeTruncation says a table was cut and names the flag that uncuts it. The
 // line it replaced printed a count with no way to reach the rows it hid.
 //
-// No sort key is named. Four tables share this line and each ranks by a
-// different column — attachment bytes, re-billed tokens, calls, and the boost
-// filter's own emission order — so any one key would be a false claim on three
-// of them.
+// No sort key is named. Three tables share this line and each ranks by a
+// different column — attachment bytes, re-billed tokens and calls — so any one
+// key would be a false claim on the other two.
 //
 // It carries no tabs on purpose: a tab-terminated first cell joins the table's
 // column block above it and stretches that column to the width of this whole

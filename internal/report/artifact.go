@@ -29,11 +29,6 @@ type Report struct {
 
 // BuildReport runs every command and merges the results.
 //
-// `--boost-deep` is deliberately not offered here: it shells out to sqlite3
-// against a Boost history DB that only exists on the machine that ran it, so
-// an artifact built with it could not be reproduced by the skeptic it is
-// written for. `tare corruption --boost-deep` remains available on its own.
-//
 // progress names each pass as it starts; nil is silent. It is a separate
 // writer from the one the report is rendered to on purpose — the caller sends
 // it to stderr so a redirect still yields a file that is only the report.
@@ -62,7 +57,7 @@ func BuildReport(dir, version string, progress io.Writer) (Report, error) {
 		return Report{}, err
 	}
 	say("corruption…")
-	if r.Corruption, err = CorruptionEnvelope(dir, version, false); err != nil {
+	if r.Corruption, err = CorruptionEnvelope(dir, version); err != nil {
 		return Report{}, err
 	}
 	r.Envelope = merge(dir, version, []Envelope{r.Scan, r.Tools, r.Attribute, r.Corruption})

@@ -63,7 +63,7 @@ func reportCorpus(t *testing.T) string {
 // disagreed in the last bit of every dollar figure. The Markdown hid it behind
 // six-significant-digit formatting; the JSON did not.
 func TestReportReproducible(t *testing.T) {
-	t.Setenv("PATH", t.TempDir()) // no boost, no sqlite3: the corpus is the only input
+	t.Setenv("PATH", t.TempDir()) // no sqlite3: the corpus is the only input
 	dir := reportCorpus(t)
 
 	var first []byte
@@ -165,7 +165,7 @@ func TestReportRendersEveryRow(t *testing.T) {
 // just the parameter: a stray Fprintln to os.Stderr inside a pass is invisible
 // on a terminal and corrupts every run whose output is read by a machine.
 func TestBuildReportSilentWhenProgressNil(t *testing.T) {
-	t.Setenv("PATH", t.TempDir()) // no boost, no sqlite3: the corpus is the only input
+	t.Setenv("PATH", t.TempDir()) // no sqlite3: the corpus is the only input
 	dir := reportCorpus(t)
 
 	stdout, err := os.CreateTemp(t.TempDir(), "stdout")

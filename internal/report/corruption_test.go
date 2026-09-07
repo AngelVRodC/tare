@@ -17,12 +17,12 @@ func TestTruncationMarkers(t *testing.T) {
 	dir := toolCorpus(t,
 		use("t1", "Bash"), result("t1", `"line one\nline two [truncated]"`, false),
 		use("t2", "Bash"), result("t2", `"clean output, nothing removed"`, false),
-		use("t3", "mcp__boostgraph__boostgraph_explore"),
-		result("t3", `[{"type":"text","text":"func Foo() {}\n(truncated; call boostgraph_explore for the rest)"}]`, false),
+		use("t3", "mcp__codegraph__codegraph_explore"),
+		result("t3", `[{"type":"text","text":"func Foo() {}\n(truncated; call codegraph_explore for the rest)"}]`, false),
 		use("t4", "WebFetch"), result("t4", `"<response clipped>"`, false),
 		use("t5", "Read"), result("t5", `"a file that merely discusses truncation as a topic"`, false),
 	)
-	env, err := CorruptionEnvelope(dir, "test", false)
+	env, err := CorruptionEnvelope(dir, "test")
 	if err != nil {
 		t.Fatalf("CorruptionEnvelope: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestErrorAndEmptyRates(t *testing.T) {
 		use("t3", "Bash"), result("t3", `""`, false),
 		use("t4", "Bash"), ext,
 	)
-	env, err := CorruptionEnvelope(dir, "test", false)
+	env, err := CorruptionEnvelope(dir, "test")
 	if err != nil {
 		t.Fatalf("CorruptionEnvelope: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestErrorAndEmptyRates(t *testing.T) {
 func TestCorruptionEnvelopeContract(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // keep the shell-outs out of a contract test
 	dir := toolCorpus(t, use("t1", "Bash"), result("t1", `"hi"`, false))
-	env, err := CorruptionEnvelope(dir, "test", false)
+	env, err := CorruptionEnvelope(dir, "test")
 	if err != nil {
 		t.Fatalf("CorruptionEnvelope: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestRenderCorruptionReadsEnvelope(t *testing.T) {
 		use("t1", "Bash"), result("t1", `"boom [truncated]"`, true),
 		use("t2", "Read"), result("t2", `"fine"`, false),
 	)
-	env, err := CorruptionEnvelope(dir, "test", false)
+	env, err := CorruptionEnvelope(dir, "test")
 	if err != nil {
 		t.Fatalf("CorruptionEnvelope: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestRenderCorruptionReadsEnvelope(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"CORPUS", "TOOL", "ERROR %", "TRUNCATED", "Bash", "Read",
-		"TRUNCATION_MARKER", "[truncated]", "BOOST", "unavailable",
+		"TRUNCATION_MARKER", "[truncated]",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table is missing %q\n%s", want, out)

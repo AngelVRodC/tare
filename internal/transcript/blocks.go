@@ -20,7 +20,7 @@ import (
 var truncationMarkers = []string{
 	"[truncated]",
 	"... (truncated)",
-	"(truncated; call ", // boost's boostgraph_explore / codegraph_explore suffix
+	"(truncated; call ", // code-explorer MCP servers name the call that returns the rest
 	"<response clipped>",
 	"[Output truncated",
 	"[Result truncated",

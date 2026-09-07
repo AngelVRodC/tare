@@ -177,9 +177,8 @@ func renderTail(w io.Writer, tw *tabwriter.Writer, env Envelope) error {
 //
 // One map serves every command, so a name emitted by two commands needs a
 // label that is true in both: `calls`, `errors`, `distinct_tools` and
-// `unmatched_results` are shared by `tools` and `corruption`, and `calls` again
-// by the Boost per-call join. A per-command map would let the wording drift
-// apart for no reader benefit.
+// `unmatched_results` are all shared by `tools` and `corruption`. A per-command
+// map would let the wording drift apart for no reader benefit.
 //
 // It covers only keyless rows. A keyed row prints its key — a tool name, a CLI
 // version, an event type, a session id — which is measured corpus data, and
@@ -244,48 +243,6 @@ var labels = map[string]string{
 	"truncated_results":       "Results carrying a truncation marker",
 	"truncation_rate_percent": "Share of results carrying a marker",
 	"truncation_marker_kinds": "Distinct truncation markers",
-
-	// boost
-	"boost_source":               "Boost figures read from",
-	"boost_cli_events_total":     "Boost CLI events, all",
-	"boost_cli_events_sampled":   "Boost CLI events, sampled",
-	"boost_mcp_calls_total":      "MCP calls Boost filtered, all",
-	"boost_mcp_calls_sampled":    "MCP calls Boost filtered, sampled",
-	"boost_mcp_saved_tokens":     "Tokens Boost claims saved on MCP",
-	"boost_files_saved_tokens":   "Tokens Boost claims saved on files",
-	"boost_files_event_count":    "File events Boost filtered",
-	"boost_builtin_filters":      "Built-in filters installed",
-	"boost_custom_filters":       "Custom filters installed",
-	"boost_filter_tokens_before": "Tokens into the built-in filters",
-	"boost_filter_tokens_after":  "Tokens out of the built-in filters",
-	"boost_filter_saved_tokens":  "Tokens the built-in filters removed",
-	"boost_filters_fired":        "Filters that fired at least once",
-
-	// The retention ceiling: Boost's history outlives the transcripts it
-	// annotates, so these bound how much of it can be joined at all.
-	"boost_transcripts_referenced": "Transcripts Boost has rows for",
-	"boost_transcripts_on_disk":    "Boost transcripts still on disk",
-	"boost_transcripts_pruned":     "Boost transcripts Claude Code pruned",
-	"boost_retention_percent":      "Share of Boost rows still joinable",
-
-	// The Boost per-call join emits one shape from two sources of very
-	// different standing, and the name is what carries the provenance: bare
-	// for the complete --boost-deep table, `sampled_` for the 100-row JSON
-	// array. The labels keep that word, or the sample reads as a total.
-	"calls_joined":                    "Calls joined to a transcript",
-	"calls_unjoined":                  "Calls whose transcript is gone",
-	"join_rate_percent":               "Share of calls joined",
-	"response_bytes":                  "Bytes before filtering",
-	"filtered_response_bytes":         "Bytes after filtering",
-	"removed_bytes":                   "Bytes the filter removed",
-	"sampled_calls":                   "Tool calls, sampled",
-	"sampled_calls_joined":            "Calls joined to a transcript, sampled",
-	"sampled_calls_unjoined":          "Calls whose transcript is gone, sampled",
-	"sampled_join_rate_percent":       "Share of calls joined, sampled",
-	"sampled_response_bytes":          "Bytes before filtering, sampled",
-	"sampled_filtered_response_bytes": "Bytes after filtering, sampled",
-	"sampled_removed_bytes":           "Bytes the filter removed, sampled",
-	"sampled_saved_tokens":            "Tokens Boost saved, sampled",
 }
 
 // label is the human name for a metric, or the metric name itself.

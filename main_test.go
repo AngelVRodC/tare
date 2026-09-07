@@ -46,8 +46,8 @@ func TestLeadingFlagSaysOrder(t *testing.T) {
 }
 
 // TestTruncationFlagsAreScoped covers the other half of the "registered only
-// where it means something" rule the --boost-deep precedent set: a flag that
-// silently does nothing is worse than one that errors. `tare report` is in the
+// where it means something" rule --harness follows: a flag that silently does
+// nothing is worse than one that errors. `tare report` is in the
 // list because the artifact never truncates, so a cap there would be dead.
 //
 // It also pins the negative cap, which has to be rejected before a pass reads
@@ -88,8 +88,8 @@ func TestPerCommandHelpAlsoExitsZero(t *testing.T) {
 	}
 }
 
-// TestHarnessFlagRejectedOnOtherCommands is the --boost-deep rule applied to
-// --harness: `tools` is the one command a second harness supplies, so naming it
+// TestHarnessFlagRejectedOnOtherCommands is the same scoping rule read from the
+// other side: `tools` is the one command a second harness supplies, so naming it
 // anywhere else has to be an error rather than a flag that reads Claude Code
 // and says nothing.
 //

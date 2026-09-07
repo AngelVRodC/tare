@@ -71,14 +71,7 @@ func run(args []string, out io.Writer) error {
 		fs.StringVar(&harness, "harness", harnessClaudeCode,
 			"which harness's transcripts to read: "+harnessClaudeCode+" or "+harnessOpenCode)
 	}
-	// Same rule, so `tare scan --boost-deep` is an error rather than a flag
-	// that silently does nothing.
-	var deep bool
-	if cmd == "corruption" {
-		fs.BoolVar(&deep, "boost-deep", false,
-			"join every Boost MCP call from its history DB via sqlite3, not the 100-row JSON sample")
-	}
-	// Same reason as --boost-deep: registered only on the two commands whose
+	// Same rule as --harness: registered only on the two commands whose
 	// tables are capped, so `tare scan --all` and `tare report --top 3` are
 	// errors rather than flags that silently do nothing.
 	var all bool
@@ -147,7 +140,7 @@ func run(args []string, out io.Writer) error {
 		}
 		return report.RenderAttribute(out, env, top)
 	case "corruption":
-		env, err := report.CorruptionEnvelope(dir, version, deep)
+		env, err := report.CorruptionEnvelope(dir, version)
 		if err != nil {
 			return err
 		}
@@ -263,14 +256,13 @@ commands:
   scan       corpus inventory: files, bytes, date range, per-type event counts
   tools      per-tool call counts and context bytes; errors and produced bytes where recorded
   attribute  tokens by skill/plugin/agent/MCP, context re-billing, attachment volume
-  corruption per-tool error, empty and truncation rates, plus the Boost counterfactual
+  corruption per-tool error, empty and truncation rates, and the markers tools wrote
   report     all four composed into one reproducible artifact (Markdown, or --json)
 
 flags (given after the command):
   --dir string   transcript root (default ~/.claude/projects; ~/.local/share/opencode with --harness opencode)
   --json         emit the JSON envelope instead of a table
   --harness NAME tools only: which harness to read, claude-code (default) or opencode
-  --boost-deep   corruption only: join every Boost MCP call, not the 100-row sample
   --top N        attribute, corruption only: rows per dimension (default 15, 0 for every row)
   --all          attribute, corruption only: same as --top 0
 `)

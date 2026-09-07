@@ -2,14 +2,12 @@ package report
 
 import (
 	"cmp"
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
-	"time"
 )
 
 // Boost source values, reported as `boost_source` so a reader always knows
@@ -19,10 +17,6 @@ const (
 	boostFromJSON    = "json"
 	boostFromDeep    = "deep"
 )
-
-// boostTimeout caps every shell-out. Boost's own report takes about a second
-// on a 196 MB history; a hung child must not hang tare.
-const boostTimeout = 2 * time.Minute
 
 // boostFilter is one row of `filters.builtin[]` / `filters.custom[]`. These
 // aggregates are complete — unlike the event arrays below.
@@ -387,23 +381,4 @@ func parseDoctorDB(out string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no %q line in boost doctor output", label)
-}
-
-// runCmd runs a child to completion under a timeout and returns its stdout.
-// Nothing here touches the network; these are local binaries reading local
-// files, and stderr is folded into the error so a failure is never silent.
-func runCmd(bin string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), boostTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, args...)
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return nil, fmt.Errorf("%s: %w: %s", bin, err, msg)
-		}
-		return nil, fmt.Errorf("%s: %w", bin, err)
-	}
-	return out, nil
 }

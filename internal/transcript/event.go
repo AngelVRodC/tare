@@ -23,6 +23,19 @@ type Event struct {
 	Cwd         string `json:"cwd"`
 	GitBranch   string `json:"gitBranch"`
 
+	// ToolDenialKind is Claude Code's own label on a blocked tool call. It is
+	// what tells a policy denial apart from a tool that ran and failed, which
+	// `is_error` cannot do on its own — both set it.
+	//
+	// Measured across 41 transcripts and 1,045 tool calls: present on 110
+	// events, every one of them carrying an is_error result and never a clean
+	// one. Two values seen — `permission-rule` (68) and `user-rejected` (42).
+	//
+	// It sits at the top level of the `user` event that carries the result,
+	// not on the tool_result block, which is why corruption.go reads it off
+	// the event rather than off ToolResult.
+	ToolDenialKind string `json:"toolDenialKind"`
+
 	AttributionSkill     string `json:"attributionSkill"`
 	AttributionPlugin    string `json:"attributionPlugin"`
 	AttributionAgent     string `json:"attributionAgent"`

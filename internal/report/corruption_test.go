@@ -50,6 +50,68 @@ func TestTruncationMarkers(t *testing.T) {
 	}
 }
 
+// resultDenied is result() plus the top-level toolDenialKind Claude Code
+// writes on a blocked call. Measured across 41 transcripts and 1,045 tool
+// calls: present on 110 events, every one carrying an is_error result and
+// never a clean one. Values seen — permission-rule (68), user-rejected (42).
+func resultDenied(id, content, kind string) string {
+	return `{"type":"user","sessionId":"s1","timestamp":"2026-09-01T10:00:01.000Z",` +
+		`"toolDenialKind":"` + kind + `",` +
+		`"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id +
+		`","content":` + content + `,"is_error":true}]}}`
+}
+
+// TestDenialIsNotAFailure is the regression test for issue #4.
+//
+// This command measures evidence that a tool altered an answer. A policy
+// denial is not that: the tool never ran. Counting both as one error rate put
+// four tools on the author's corpus at a non-zero rate whose real rate was
+// zero, and inflated Bash from 11.5% to 26.6%.
+//
+// errors is asserted whole on purpose. `tools` emits it too, and merge()
+// treats a disagreement between two commands as a defect in this tool.
+func TestDenialIsNotAFailure(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // hermetic: this gate is transcript-only
+	dir := toolCorpus(t,
+		use("t1", "Bash"), resultDenied("t1", `"This command requires approval"`, "permission-rule"),
+		use("t2", "Bash"), resultDenied("t2", `"The user doesn't want to proceed with this tool use"`, "user-rejected"),
+		use("t3", "Bash"), result("t3", `"Exit code 1"`, true),
+		use("t4", "Read"), resultDenied("t4", `"The user doesn't want to proceed with this tool use"`, "user-rejected"),
+		use("t5", "Grep"), result("t5", `"clean"`, false),
+	)
+	env, err := CorruptionEnvelope(dir, "test")
+	if err != nil {
+		t.Fatalf("CorruptionEnvelope: %v", err)
+	}
+
+	for _, c := range []struct {
+		name, dim, key string
+		want           any
+	}{
+		{"errors", "corpus", "", int64(4)},
+		{"denied", "corpus", "", int64(3)},
+		{"failures", "corpus", "", int64(1)},
+		{"errors", "tool", "Bash", int64(3)},
+		{"denied", "tool", "Bash", int64(2)},
+		{"failures", "tool", "Bash", int64(1)},
+		// Read's only error was a denial, so its failure rate is a true zero.
+		{"errors", "tool", "Read", int64(1)},
+		{"failures", "tool", "Read", int64(0)},
+		{"denied", "denial_kind", "permission-rule", int64(1)},
+		{"denied", "denial_kind", "user-rejected", int64(2)},
+	} {
+		if got := metricValue(t, env, c.name, c.dim, c.key); got != c.want {
+			t.Errorf("%s/%s/%s = %v, want %v", c.name, c.dim, c.key, got, c.want)
+		}
+	}
+	if got := metricValue(t, env, "failure_rate_percent", "corpus", ""); got != 20.0 {
+		t.Errorf("failure_rate_percent = %v, want 20 — 1 failure in 5 calls", got)
+	}
+	if !strings.Contains(strings.Join(env.Warnings, "\n"), "toolDenialKind") {
+		t.Errorf("warnings must name the field the split reads: %v", env.Warnings)
+	}
+}
+
 // TestErrorAndEmptyRates covers the other two transcript-only signals, and the
 // one case that must NOT be called empty: an externalised result is empty in
 // context on purpose and losslessly.

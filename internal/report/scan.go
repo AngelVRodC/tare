@@ -46,6 +46,18 @@ func ScanEnvelope(dir, version string) (Envelope, error) {
 	add("known_event_types", transcript.KnownTypeCount(), "types")
 	add("distinct_cli_versions", len(versions), "versions")
 	add("parse_errors", stats.ParseErrors, "errors")
+	// Emitted only when there is something to report: a row of zero on every
+	// clean corpus would say nothing, and the warning is what carries the
+	// finding when there is one.
+	if stats.NonTranscriptRecords > 0 {
+		add("files_non_transcript", stats.NonTranscriptFiles, "files")
+		add("non_transcript_records", stats.NonTranscriptRecords, "records")
+		b.warn("%d records under the root carry an agentId and a resume key and no sessionId — "+
+			"Workflow-tool journal entries, not transcript events. They are excluded from every "+
+			"count above except bytes on disk. Files holding nothing else: %d, excluded from the "+
+			"file counts too",
+			stats.NonTranscriptRecords, stats.NonTranscriptFiles)
+	}
 
 	// Retention gap: Claude Code's own session count against the transcripts
 	// still on disk. stats-cache.json is a sibling of the projects directory.
@@ -194,7 +206,11 @@ var labels = map[string]string{
 	"known_event_types":     "Event types tare parses",
 	"distinct_cli_versions": "Claude Code versions seen",
 	"parse_errors":          "Lines that failed to parse",
-	"stats_cache_sessions":  "Sessions in Claude Code's own cache",
+	// A journal is not a conversation, so it is named for what it is not
+	// rather than counted as a transcript it never was.
+	"files_non_transcript":   "Non-transcript files",
+	"non_transcript_records": "Non-transcript records",
+	"stats_cache_sessions":   "Sessions in Claude Code's own cache",
 	// The gap is cache minus disk, so it names transcripts Claude Code has
 	// forgotten. "Retention gap" is the arithmetic; this is the finding.
 	"retention_gap": "Sessions no longer on disk",

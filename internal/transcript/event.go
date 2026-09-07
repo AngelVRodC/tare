@@ -18,10 +18,14 @@ type Event struct {
 	SessionID   string `json:"sessionId"`
 	AgentID     string `json:"agentId"`
 	IsSidechain bool   `json:"isSidechain"`
-	Version     string `json:"version"`
-	Timestamp   string `json:"timestamp"`
-	Cwd         string `json:"cwd"`
-	GitBranch   string `json:"gitBranch"`
+	// ResumeKey is the Workflow tool's content hash for one agent dispatch. It
+	// appears on a journal record and never on a transcript event, so it is
+	// half of what tells the two apart. See IsWorkflowJournal.
+	ResumeKey string `json:"key"`
+	Version   string `json:"version"`
+	Timestamp string `json:"timestamp"`
+	Cwd       string `json:"cwd"`
+	GitBranch string `json:"gitBranch"`
 
 	// ToolDenialKind is Claude Code's own label on a blocked tool call. It is
 	// what tells a policy denial apart from a tool that ran and failed, which
@@ -64,6 +68,48 @@ type Event struct {
 	// One file is not one session: subagent transcripts share the parent
 	// sessionId with their own agentId. Not a transcript field.
 	InSubagentDir bool `json:"-"`
+}
+
+// IsWorkflowJournal reports whether this line is a Workflow-tool journal
+// record rather than a transcript event.
+//
+// Claude Code writes one journal per workflow run at
+// `<session>/subagents/workflows/wf_*/journal.jsonl`, which is a sibling of
+// the subagent transcripts and carries the resume cache, not a conversation.
+// Measured on a 41-file corpus: 4 such files, 34 records, three `type` values
+// — `started`, `result` and `failed`.
+//
+// The test is deliberately positive — what a journal record *is*, not what a
+// transcript event is not. A bare "no sessionId" rule would silently swallow
+// any future transcript type that happened to omit it.
+//
+// The definition this excludes against is already in AGENTS.md: a subagent
+// transcript shares the parent sessionId with its own agentId and
+// isSidechain: true. A journal record has none of the three.
+//
+// The `type` conjunct is the load-bearing one, because the two ways this can
+// be wrong are not symmetric. `key` is a generic JSON name, so a rule without
+// the type set rests on a no-collision claim about every field Claude Code
+// might yet add, and a false positive there removes real events from every
+// count in silence. A journal type missing from the set fails the other way:
+// the record stays a transcript event, knownTypes does not recognise it, and
+// `scan` reports it as an unknown type with a warning. A loud miss is
+// recoverable and a silent exclusion is not, so the set is closed.
+func (ev *Event) IsWorkflowJournal() bool {
+	return ev.SessionID == "" && ev.AgentID != "" && ev.ResumeKey != "" && journalTypes[ev.Type]
+}
+
+// journalTypes are the record types a Workflow journal writes.
+//
+// Measured on a 41-file, 7-version corpus of 4,388 records: 34 carry a
+// top-level `key` and every one of them is one of these three types. No record
+// carrying a sessionId carried a `key` at all. That sample does not cover the
+// 381-file corpus knownTypes rests on, which is why the type conjunct exists
+// rather than the measurement being treated as sufficient on its own.
+var journalTypes = map[string]bool{
+	"started": true,
+	"result":  true,
+	"failed":  true,
 }
 
 // knownTypes is the set of top-level `type` values measured on the corpus on

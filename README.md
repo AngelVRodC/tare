@@ -50,6 +50,16 @@ later.
         └─ cost-state                the session bill, recorded once per session
 ```
 
+Not every `.jsonl` under that root is a transcript. The Workflow tool writes
+its own journal beside the subagent transcripts, at
+`<session>/subagents/workflows/wf_*/journal.jsonl` — a resume cache, not a
+conversation. A record carrying an `agentId` and a resume `key` with no
+`sessionId`, whose `type` is one the journal writes, is classified as a journal
+entry and kept out of the event counts. Those files and records get their own
+`scan` rows — `files_non_transcript` and `non_transcript_records` — plus a
+warning, so they are never dropped in silence. `bytes` still counts them,
+because they are on the disk.
+
 Event shapes are sniffed, never trusted to a version field: tolerant structs,
 with `json.RawMessage` over the regions that changed across those 29 versions.
 An unknown event type increments a counter and is reported; it is never fatal.
@@ -153,7 +163,7 @@ Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
 
 | Command | What it answers | Own flags |
 |---|---|---|
-| `tare scan` | What is in the corpus at all — files, bytes, date range, event types, CLI versions, retention gap | — |
+| `tare scan` | What is in the corpus at all — files, bytes, date range, event types, CLI versions, retention gap, and any `.jsonl` under the root that is not a transcript | — |
 | `tare tools` | What each tool cost — calls and context bytes in; errors and produced bytes where recorded | `--harness` |
 | `tare attribute` | Which skill / plugin / agent / MCP server the tokens belong to, and how much prior context was re-billed | `--top`, `--all` |
 | `tare corruption` | What share of calls failed, how many the harness denied instead, and what returned nothing or carried a truncation marker | `--top`, `--all` |

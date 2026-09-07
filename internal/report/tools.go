@@ -48,6 +48,7 @@ func ToolsEnvelope(dir, version string, w Window) (Envelope, error) {
 	names := map[string]string{} // tool_use_id → tool name
 	tools := map[string]*toolStat{}
 	servers := map[string]*toolStat{}
+	pluginSegments := map[string]*toolStat{}
 	answered := map[string]bool{}
 	usesInWindow := map[string]bool{}
 
@@ -129,6 +130,13 @@ func ToolsEnvelope(dir, version string, w Window) (Envelope, error) {
 			bucket(tools, name).add(r.ContextBytes, r.ImageBytes, produced, r.IsError)
 			if server := mcpServer(name); server != "" {
 				bucket(servers, server).add(r.ContextBytes, r.ImageBytes, produced, r.IsError)
+				// Plugin-provided servers arrive as segment
+				// plugin_<plugin>_<server>. The segments are parked here
+				// unresolved and named after the scan — same measured bytes,
+				// zero new parsing.
+				if strings.HasPrefix(server, "plugin_") {
+					bucket(pluginSegments, server).add(r.ContextBytes, r.ImageBytes, produced, r.IsError)
+				}
 			}
 		}
 	})
@@ -171,8 +179,26 @@ func ToolsEnvelope(dir, version string, w Window) (Envelope, error) {
 	addWin("externalised_produced_bytes", extProduced, "bytes")
 	addWin("externalised_context_bytes", extContext, "bytes")
 
+	// Resolution happens after the scan: the authority (user-scope config,
+	// independent of --dir) provides key mapping only, never a value. An
+	// unreadable authority omits the whole dimension with one warning —
+	// absent is not zero.
+	pluginResolved := map[string]*toolStat{}
+	if path, pathErr := pluginSettingsPath(); pathErr != nil {
+		b.warn("plugin rollup unavailable: %v — plugin rows omitted, not zeroed", pathErr)
+	} else if names, err := pluginNames(path); err != nil {
+		b.warn("plugin rollup unavailable: %v — plugin rows omitted, not zeroed", err)
+	} else {
+		resolved, unresolvedKeys := pluginRollup(pluginSegments, names)
+		pluginResolved = resolved
+		if len(unresolvedKeys) > 0 {
+			b.warn("plugin: %d unresolved segments: %s", len(unresolvedKeys), strings.Join(unresolvedKeys, ", "))
+		}
+	}
+
 	b.rows(statMetrics("tool", tools)...)
 	b.rows(statMetrics("mcp_server", servers)...)
+	b.rows(statMetrics("plugin", pluginResolved)...)
 	return b.done(scanStats), nil
 }
 
@@ -234,9 +260,11 @@ func RenderTools(w io.Writer, env Envelope) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	writeCorpus(tw, env, "")
 	// mcp_server rows are a subset of tool rows, so their shares are of all
-	// context rather than of each other, and do not sum to 100.
+	// context rather than of each other, and do not sum to 100. The plugin
+	// rows are a subset too — they re-key mcp_server segments, never add
+	// bytes — so the same caveat covers them.
 	context := corpusValue(env, "context_bytes")
-	for _, dim := range []string{"tool", "mcp_server"} {
+	for _, dim := range []string{"tool", "mcp_server", "plugin"} {
 		rows := groupRows(env.Metrics, dim)
 		if len(rows) == 0 {
 			continue

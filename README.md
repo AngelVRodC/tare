@@ -475,6 +475,11 @@ Issues and pull requests are welcome. The most useful contribution is a
 transcript shape this tool gets wrong — Claude Code has written this corpus in
 29 versions so far, and the next one will move something again.
 
+If you work with a coding agent, [`AGENTS.md`](AGENTS.md) is the project's decision
+record — the reasoning behind the invariants below, the traps that cost a
+measurement to find, and the gates a change must not break. `CLAUDE.md` is a
+symlink to it for Claude Code, which reads that name instead.
+
 ### Getting set up
 
 ```bash

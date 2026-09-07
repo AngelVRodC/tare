@@ -4,13 +4,12 @@
 thoughts/
 .atl/
 
-CLAUDE.md
 CLAUDE.local.md
 
 # Machine-specific code index. Rebuilt per checkout, never portable.
 .codegraph/
 
 # Go
-tare
+/tare
 *.test
 *.out

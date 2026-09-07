@@ -71,6 +71,11 @@ func run(args []string, out io.Writer) error {
 	// same pass. resolveDir applies it after. usage() carries it for the user.
 	dirFlag := fs.String("dir", "", "transcript root")
 	asJSON := fs.Bool("json", false, "emit the JSON envelope instead of a table")
+	// Registered unconditionally, like --dir/--json: a time window is a
+	// question about any command's output, not about one command. The
+	// descriptions are dead text — usage() is the documentation.
+	sinceFlag := fs.String("since", "", "window start: bare date or full UTC RFC3339")
+	untilFlag := fs.String("until", "", "window end: bare date or full UTC RFC3339")
 	// Registered only where it means something, so `tare scan --harness
 	// opencode` is an error rather than a flag that silently does nothing:
 	// `tools` is the one command a second harness supplies.
@@ -104,6 +109,12 @@ func run(args []string, out io.Writer) error {
 	// a cap of zero or less truncates nothing. Given both, --all wins.
 	if all {
 		top = 0
+	}
+	// Before resolveDir, so a malformed bound fails loudly before anything
+	// else — and before any corpus is read. T4 threads the resulting Window
+	// through the envelope constructors; this discards it until then.
+	if _, err := report.NewWindow(*sinceFlag, *untilFlag); err != nil {
+		return err
 	}
 	// After the parse, because the default --dir depends on --harness and both
 	// arrive in the same pass. An unknown harness is rejected here, before any
@@ -265,6 +276,8 @@ flags (given after the command):
   --dir string   transcript root (default ~/.claude/projects; ~/.local/share/opencode with --harness opencode)
   --json         emit the JSON envelope instead of a table
   --harness NAME tools only: which harness to read, claude-code (default) or opencode
+  --since BOUND  window start: bare date YYYY-MM-DD or full UTC RFC3339 YYYY-MM-DDTHH:MM:SS.sssZ
+  --until BOUND  window end: same shapes; a bare date includes the whole named day
   --top N        attribute, corruption only: rows per dimension (default 15, 0 for every row)
   --all          attribute, corruption only: same as --top 0
 `)

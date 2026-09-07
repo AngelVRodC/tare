@@ -220,7 +220,7 @@ func openCodeTime(ms int64) string {
 // envelope the Claude Code path emits — same command name, same metric names —
 // so RenderTools, WriteJSON and Validate work unchanged and the JSON contract
 // does not fork per harness.
-func OpenCodeToolsEnvelope(dir, version string) (Envelope, error) {
+func OpenCodeToolsEnvelope(dir, version string, w Window) (Envelope, error) {
 	rows, span, dbSize, err := openCodeRead(dir)
 	if err != nil {
 		return Envelope{}, err
@@ -228,22 +228,24 @@ func OpenCodeToolsEnvelope(dir, version string) (Envelope, error) {
 	// A missing or unreadable config is not fatal here, unlike a missing
 	// database: it costs the mcp_server block and a warning, nothing else.
 	servers, serverErr := openCodeServers(openCodeConfigPath())
-	return openCodeEnvelope(dir, version, rows, span, servers, serverErr, dbSize), nil
+	return openCodeEnvelope(dir, version, rows, span, servers, serverErr, dbSize, w), nil
 }
 
 // openCodeEnvelope is the arithmetic half, split from the shell-out so the
 // rollup→envelope contract is testable with no sqlite3 on PATH.
 func openCodeEnvelope(dir, version string, rows []openCodeToolRow, span openCodeSpan,
-	servers []string, serverErr error, dbSize int64) Envelope {
-	b := newBuilder(dir, version, "tools")
+	servers []string, serverErr error, dbSize int64, w Window) Envelope {
+	b := newBuilder(dir, version, "tools", w)
 	// A zero span is an empty database, not midnight in 1970 — widening the
 	// range to the epoch would print a corpus that starts 56 years before the
-	// harness existed.
+	// harness existed. The type is empty: OpenCode has no Event, its
+	// timestamps are millisecond integers formatted here, so there is no
+	// measured type to name as untimestamped.
 	if span.MinMs != 0 {
-		b.seeTime(openCodeTime(span.MinMs))
+		b.seeTime(openCodeTime(span.MinMs), "")
 	}
 	if span.MaxMs != 0 {
-		b.seeTime(openCodeTime(span.MaxMs))
+		b.seeTime(openCodeTime(span.MaxMs), "")
 	}
 
 	tools := map[string]*toolStat{}

@@ -39,23 +39,35 @@ func (s *toolStat) add(ctx, image, produced int64, isError bool) {
 // same file, so only an id → name map is retained, never a line of content.
 // An unmatched result is reported, never dropped — the measured baseline is
 // zero, so any non-zero count is a finding.
-func ToolsEnvelope(dir, version string) (Envelope, error) {
+//
+// Under a window the join map and the answered/unmatched bookkeeping stay
+// corpus-wide (time-window-6): no window cut may sever a join or inflate
+// unmatched_results. What the window gates is the aggregation — the per-tool
+// buckets and the block counters count in-window events only.
+func ToolsEnvelope(dir, version string, w Window) (Envelope, error) {
 	names := map[string]string{} // tool_use_id → tool name
 	tools := map[string]*toolStat{}
 	servers := map[string]*toolStat{}
 	answered := map[string]bool{}
+	usesInWindow := map[string]bool{}
 
 	var useBlocks, resultBlocks, unmatched int64
 	var extResults, extProduced, extContext int64
 	var imageBlocks int64
-	b := newBuilder(dir, version, "tools")
+	b := newBuilder(dir, version, "tools", w)
 
 	scanStats, err := transcript.Scan(dir, func(ev *transcript.Event) {
-		b.seeTime(ev.Timestamp)
+		b.seeTime(ev.Timestamp, ev.Type)
 		uses, results := ev.Blocks()
+		inWin := w.Includes(ev.Timestamp)
 		for _, u := range uses {
-			useBlocks++
+			// The join map is corpus-wide: a use inside the window whose
+			// result lies outside must still resolve.
 			names[u.ID] = u.Name
+			if inWin {
+				usesInWindow[u.ID] = true
+				useBlocks++
+			}
 		}
 		if len(results) == 0 {
 			return
@@ -64,7 +76,9 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 		// The externalisation record sits on the event, not the block. Every
 		// one of the 39 measured records is on an event with exactly one
 		// result, so a second result would make the attribution ambiguous —
-		// say so rather than double-count it.
+		// say so rather than double-count it. Defect detection stays
+		// unconditional: a window restricts what is measured, not what is
+		// reported broken.
 		persisted := ev.Persisted()
 		if persisted != nil && len(results) != 1 {
 			b.warn("%s: persisted output %s on an event with %d tool_result blocks — produced bytes not attributed",
@@ -73,7 +87,6 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 		}
 
 		for _, r := range results {
-			resultBlocks++
 			name, ok := names[r.ToolUseID]
 			if !ok {
 				unmatched++
@@ -81,6 +94,24 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 				continue
 			}
 			answered[r.ToolUseID] = true
+
+			// The measured baseline is 39 of 39 byte-exact, so a size that
+			// disagrees is a real defect. A side file that is simply gone
+			// is only a warning: a transcript outlives its side file. The
+			// checks run before the window gate — a defect is a finding
+			// about the corpus, not about the query.
+			if persisted != nil {
+				if fi, err := os.Stat(persisted.Path); err != nil {
+					b.warn("persisted output missing: %s (%v)", persisted.Path, err)
+				} else if fi.Size() != persisted.Size {
+					b.warn("persisted output size mismatch: %s reports %d bytes, on disk %d",
+						persisted.Path, persisted.Size, fi.Size())
+				}
+			}
+			if !inWin {
+				continue
+			}
+			resultBlocks++
 
 			// Inline: what was produced is what arrived — text and image
 			// alike. Externalised results overwrite this below.
@@ -93,15 +124,6 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 				extResults++
 				extProduced += persisted.Size
 				extContext += r.ContextBytes
-				// The measured baseline is 39 of 39 byte-exact, so a size that
-				// disagrees is a real defect. A side file that is simply gone
-				// is only a warning: a transcript outlives its side file.
-				if fi, err := os.Stat(persisted.Path); err != nil {
-					b.warn("persisted output missing: %s (%v)", persisted.Path, err)
-				} else if fi.Size() != persisted.Size {
-					b.warn("persisted output size mismatch: %s reports %d bytes, on disk %d",
-						persisted.Path, persisted.Size, fi.Size())
-				}
 			}
 
 			bucket(tools, name).add(r.ContextBytes, r.ImageBytes, produced, r.IsError)
@@ -123,24 +145,31 @@ func ToolsEnvelope(dir, version string) (Envelope, error) {
 		totals.Errors += s.Errors
 	}
 	// A use with no result is the live tail of a running session, not a defect
-	// in the same sense as an unmatched result — count it apart.
-	unanswered := int64(len(names) - len(answered))
+	// in the same sense as an unmatched result — count it apart. Under a
+	// window, only in-window uses are counted, and an answer counts wherever
+	// in the corpus it sits.
+	var unanswered int64
+	for id := range usesInWindow {
+		if !answered[id] {
+			unanswered++
+		}
+	}
 
-	add := b.add
-	add("tool_use_blocks", useBlocks, "blocks")
-	add("tool_result_blocks", resultBlocks, "blocks")
+	add, addWin := b.add, b.addWin
+	addWin("tool_use_blocks", useBlocks, "blocks")
+	addWin("tool_result_blocks", resultBlocks, "blocks")
 	add("unmatched_results", unmatched, "blocks")
-	add("unanswered_uses", unanswered, "blocks")
-	add("distinct_tools", len(tools), "tools")
-	add("calls", totals.Calls, "calls")
-	add("context_bytes", totals.ContextBytes, "bytes")
-	add("image_bytes", totals.ImageBytes, "bytes")
-	add("image_results", imageBlocks, "results")
-	add("produced_bytes", totals.ProducedBytes, "bytes")
-	add("errors", totals.Errors, "calls")
-	add("externalised_results", extResults, "results")
-	add("externalised_produced_bytes", extProduced, "bytes")
-	add("externalised_context_bytes", extContext, "bytes")
+	addWin("unanswered_uses", unanswered, "blocks")
+	addWin("distinct_tools", len(tools), "tools")
+	addWin("calls", totals.Calls, "calls")
+	addWin("context_bytes", totals.ContextBytes, "bytes")
+	addWin("image_bytes", totals.ImageBytes, "bytes")
+	addWin("image_results", imageBlocks, "results")
+	addWin("produced_bytes", totals.ProducedBytes, "bytes")
+	addWin("errors", totals.Errors, "calls")
+	addWin("externalised_results", extResults, "results")
+	addWin("externalised_produced_bytes", extProduced, "bytes")
+	addWin("externalised_context_bytes", extContext, "bytes")
 
 	b.rows(statMetrics("tool", tools)...)
 	b.rows(statMetrics("mcp_server", servers)...)

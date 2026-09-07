@@ -37,10 +37,111 @@ func fixtureCorpus(t *testing.T) string {
 	return dir
 }
 
+// TestEnvelopeSchemaVersionOrderAndValue pins the schema_version contract:
+// every `--json` envelope carries schema_version as its SECOND key — between
+// tool and version, because struct order is serialisation order and position
+// is consumer-visible — with value 1. Asserted on the wire, not the struct:
+// that is what a consumer reads. The token-stream decode sees the keys in the
+// order they were written, which json.Unmarshal into a map would discard.
+func TestEnvelopeSchemaVersionOrderAndValue(t *testing.T) {
+	// firstKeys decodes one envelope's JSON byte stream token by token and
+	// returns the first three key names in wire order plus the schema_version
+	// value the stream carried.
+	firstKeys := func(t *testing.T, env Envelope) ([]string, float64) {
+		t.Helper()
+		var buf bytes.Buffer
+		if err := WriteJSON(&buf, env); err != nil {
+			t.Fatalf("WriteJSON: %v", err)
+		}
+		dec := json.NewDecoder(&buf)
+		if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+			t.Fatalf("expected opening brace, got %v (%v)", tok, err)
+		}
+		var (
+			keys  []string
+			value = -1.0
+		)
+		for len(keys) < 3 {
+			tok, err := dec.Token()
+			if err != nil {
+				t.Fatalf("reading key %d: %v", len(keys)+1, err)
+			}
+			name, ok := tok.(string)
+			if !ok {
+				t.Fatalf("expected a key, got %v", tok)
+			}
+			val, err := dec.Token()
+			if err != nil {
+				t.Fatalf("reading value of %s: %v", name, err)
+			}
+			keys = append(keys, name)
+			if name == "schema_version" {
+				num, ok := val.(float64)
+				if !ok {
+					t.Fatalf("schema_version = %v, want a number", val)
+				}
+				value = num
+			}
+		}
+		return keys, value
+	}
+
+	// build points the test at every place an envelope is constructed: the
+	// four command builders, the OpenCode rollup builder, and the report
+	// merge. Each gets its own assertions so a fix at one site cannot mask a
+	// miss at another.
+	corpus := fixtureCorpus(t)
+	envs := map[string]Envelope{}
+	if env, err := ScanEnvelope(corpus, "test", Window{}); err != nil {
+		t.Fatalf("ScanEnvelope: %v", err)
+	} else {
+		envs["ScanEnvelope"] = env
+	}
+	if env, err := ToolsEnvelope(corpus, "test", Window{}); err != nil {
+		t.Fatalf("ToolsEnvelope: %v", err)
+	} else {
+		envs["ToolsEnvelope"] = env
+	}
+	if env, err := AttributeEnvelope(corpus, "test", Window{}); err != nil {
+		t.Fatalf("AttributeEnvelope: %v", err)
+	} else {
+		envs["AttributeEnvelope"] = env
+	}
+	if env, err := CorruptionEnvelope(corpus, "test", Window{}); err != nil {
+		t.Fatalf("CorruptionEnvelope: %v", err)
+	} else {
+		envs["CorruptionEnvelope"] = env
+	}
+	envs["openCodeEnvelope"] = openCodeEnvelope(corpus, "test", nil, openCodeSpan{}, nil, nil, 0, Window{})
+	if r, err := BuildReport(corpus, "test", Window{}, nil); err != nil {
+		t.Fatalf("BuildReport: %v", err)
+	} else {
+		envs["merge (BuildReport)"] = r.Envelope
+	}
+
+	for name, env := range envs {
+		t.Run(name, func(t *testing.T) {
+			keys, value := firstKeys(t, env)
+			want := []string{"tool", "schema_version", "version"}
+			if len(keys) != len(want) {
+				t.Fatalf("first keys = %v, want %v", keys, want)
+			}
+			for i := range want {
+				if keys[i] != want[i] {
+					t.Fatalf("key order = %v, want %v", keys, want)
+				}
+			}
+			if value != 1 {
+				t.Errorf("schema_version = %v, want 1", value)
+			}
+		})
+	}
+}
+
 // TestEnvelopeDerivation is the phase gate: every row of every `--json`
 // envelope carries a derivation, and an estimated row names its method.
 func TestEnvelopeDerivation(t *testing.T) {
-	env, err := ScanEnvelope(fixtureCorpus(t), "test")
+	env, err := ScanEnvelope(fixtureCorpus(t), "test", Window{})
 	if err != nil {
 		t.Fatalf("ScanEnvelope: %v", err)
 	}
@@ -105,7 +206,7 @@ func TestValidateRejects(t *testing.T) {
 // TestScanEnvelopeCounts checks the inventory arithmetic against a fixture
 // whose every number is known by hand.
 func TestScanEnvelopeCounts(t *testing.T) {
-	env, err := ScanEnvelope(fixtureCorpus(t), "test")
+	env, err := ScanEnvelope(fixtureCorpus(t), "test", Window{})
 	if err != nil {
 		t.Fatalf("ScanEnvelope: %v", err)
 	}
@@ -177,7 +278,7 @@ func TestNonTranscriptRowsRenderAndVanishWhenClean(t *testing.T) {
 			"proj/sess/subagents/workflows/wf_x/journal.jsonl": `{"type":"started","key":"v2:a","agentId":"a1"}` + "\n" +
 				`{"type":"result","key":"v2:a","agentId":"a1"}` + "\n",
 		})
-		env, err := ScanEnvelope(dir, "test")
+		env, err := ScanEnvelope(dir, "test", Window{})
 		if err != nil {
 			t.Fatalf("ScanEnvelope: %v", err)
 		}
@@ -205,7 +306,7 @@ func TestNonTranscriptRowsRenderAndVanishWhenClean(t *testing.T) {
 	})
 
 	t.Run("clean corpus omits the rows", func(t *testing.T) {
-		env, err := ScanEnvelope(corpus(t, map[string]string{"proj/sess.jsonl": txLine}), "test")
+		env, err := ScanEnvelope(corpus(t, map[string]string{"proj/sess.jsonl": txLine}), "test", Window{})
 		if err != nil {
 			t.Fatalf("ScanEnvelope: %v", err)
 		}
@@ -221,7 +322,7 @@ func TestNonTranscriptRowsRenderAndVanishWhenClean(t *testing.T) {
 }
 
 func TestRenderScanReadsEnvelope(t *testing.T) {
-	env, err := ScanEnvelope(fixtureCorpus(t), "test")
+	env, err := ScanEnvelope(fixtureCorpus(t), "test", Window{})
 	if err != nil {
 		t.Fatalf("ScanEnvelope: %v", err)
 	}

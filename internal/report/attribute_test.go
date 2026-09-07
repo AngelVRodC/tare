@@ -74,7 +74,7 @@ func attributeCorpus(t *testing.T, lines ...string) Envelope {
 		[]byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env, err := AttributeEnvelope(dir, "test")
+	env, err := AttributeEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("AttributeEnvelope: %v", err)
 	}
@@ -213,7 +213,9 @@ func TestWeightsMatchBilling(t *testing.T) {
 
 // TestAllocationConserves pins the property that makes the estimate safe: a
 // wrong ratio moves dollars between rows and never changes the total, because
-// the total is the measured bill.
+// the total is the measured bill. Money is integer microdollars, so each row
+// rounds to the nearest micro; the summed rows may drift from the rounded bill
+// by up to one micro per row, never more.
 func TestAllocationConserves(t *testing.T) {
 	const model = "claude-opus-5"
 	const bill = 12.34
@@ -232,24 +234,24 @@ func TestAllocationConserves(t *testing.T) {
 		costLine(t, "s1", bill, map[string]transcript.ModelUsage{model: total}),
 	)
 
-	var sum float64
-	var rows int
+	billed := int64(math.Round(bill * 1e6))
+	var sum, rows int64
 	for _, m := range env.Metrics {
 		if m.Name == "cost_usd" && m.Dimension == "attribution_skill" {
-			sum += m.Value.(float64)
+			sum += m.Value.(int64)
 			rows++
 		}
 	}
 	if rows != 2 {
 		t.Fatalf("allocated across %d skill rows, want 2", rows)
 	}
-	if math.Abs(sum-bill) > 1e-9 {
-		t.Errorf("allocated %.12f, want the measured bill %.12f", sum, bill)
+	if drift := sum - billed; drift < -rows || drift > rows {
+		t.Errorf("allocated %d micro, want the measured bill %d micro within %d (per-row rounding)", sum, billed, rows)
 	}
 	// The split has to be a split, not the bill twice.
-	alpha := mustMetric(t, env, "cost_usd", "attribution_skill", "alpha").Value.(float64)
-	if alpha <= 0 || alpha >= bill {
-		t.Errorf("alpha allocated %v, want a share strictly inside (0, %v)", alpha, bill)
+	alpha := mustMetric(t, env, "cost_usd", "attribution_skill", "alpha").Value.(int64)
+	if alpha <= 0 || alpha >= billed {
+		t.Errorf("alpha allocated %v, want a share strictly inside (0, %v)", alpha, billed)
 	}
 }
 
@@ -272,7 +274,7 @@ func TestNoMeasuredDollars(t *testing.T) {
 
 	var dollarRows int
 	for i, m := range env.Metrics {
-		if m.Unit != "usd" {
+		if m.Unit != "microdollars" {
 			continue
 		}
 		dollarRows++
@@ -289,6 +291,56 @@ func TestNoMeasuredDollars(t *testing.T) {
 	if got := mustMetric(t, env, "cost_usd", "attribution_plugin", "desplega"); got.Method == nil ||
 		*got.Method != AllocationMethod {
 		t.Errorf("allocated row names method %v, want %q", got.Method, AllocationMethod)
+	}
+}
+
+// TestMoneyRowsAreIntegerMicrodollars pins the wire shape of money
+// (microdollar-cost-1): every money row carries an integer value under the
+// `microdollars` unit, and where coverage is complete the identity
+// allocated + unallocated = billed holds in integers (microdollar-cost-2).
+func TestMoneyRowsAreIntegerMicrodollars(t *testing.T) {
+	const model = "claude-opus-5"
+	const bill = 12.34
+	env := attributeCorpus(t,
+		usageLine(t, "s1", "msg_1", model,
+			tokens{in: 900, out: 40, read: 120_000, c5m: 3_000},
+			map[string]string{"attributionSkill": "alpha"}),
+		usageLine(t, "s1", "msg_2", model,
+			tokens{in: 12, out: 4_400, read: 8_000, c1h: 50_000},
+			map[string]string{"attributionSkill": "beta"}),
+		costLine(t, "s1", bill, map[string]transcript.ModelUsage{model: {
+			Input: 912, Output: 4_440, CacheRead: 128_000, CacheCreate: 53_000, CostUSD: bill,
+		}}),
+	)
+
+	money := map[string]bool{
+		"cost_usd": true, "allocated_cost_usd": true, "unallocated_cost_usd": true,
+	}
+	var moneyRows int
+	for _, m := range env.Metrics {
+		if !money[m.Name] {
+			continue
+		}
+		moneyRows++
+		if m.Unit != "microdollars" {
+			t.Errorf("money row %s/%s carries unit %q, want microdollars", m.Name, m.Key, m.Unit)
+		}
+		if _, ok := m.Value.(int64); !ok {
+			t.Errorf("money row %s/%s value %v is %T, want int64", m.Name, m.Key, m.Value, m.Value)
+		}
+	}
+	if moneyRows == 0 {
+		t.Fatal("no money rows emitted — the contract was not exercised")
+	}
+
+	// Coverage is complete here (the fixture bills exactly what the transcript
+	// records), so nothing is unallocated for lack of events and the two
+	// corpus rows must sum to the measured bill in whole microdollars.
+	billed := int64(math.Round(bill * 1e6))
+	alloc := mustMetric(t, env, "allocated_cost_usd", "corpus", "").Value.(int64)
+	unalloc := mustMetric(t, env, "unallocated_cost_usd", "corpus", "").Value.(int64)
+	if alloc+unalloc != billed {
+		t.Errorf("allocated (%d) + unallocated (%d) = %d, want billed %d", alloc, unalloc, alloc+unalloc, billed)
 	}
 }
 
@@ -577,5 +629,92 @@ func TestAbsentModelsCollapse(t *testing.T) {
 	}
 	if n := strings.Count(absent[0], "haiku-bg"); n != 1 {
 		t.Errorf("a model billed in two sessions must be named once, named %d times: %q", n, absent[0])
+	}
+}
+
+// isZeroValue reports whether a metric value is a numeric zero — the shape a
+// window-emptied keyless row would take if it were emitted instead of omitted.
+func isZeroValue(v any) bool {
+	switch n := v.(type) {
+	case int:
+		return n == 0
+	case int64:
+		return n == 0
+	case float64:
+		return n == 0
+	}
+	return false
+}
+
+// TestAttributeEmptyWindowOmitsNotZeroes extends the time-window-8 gate to the
+// attribute command: when the window matches no events, every windowed KEYLESS
+// corpus row is omitted — a measured zero the window emptied is an over-claim
+// Validate cannot catch — and exactly one warning states the miss.
+//
+// attribute has no corpus-wide keyless row to keep rendering (files/bytes and
+// parse errors belong to scan), so its corpus block is empty by design under a
+// no-match window; the C1 warning is what still renders. The estimated money
+// pair is gated by the same omit path.
+func TestAttributeEmptyWindowOmitsNotZeroes(t *testing.T) {
+	dir := t.TempDir()
+	lines := []string{
+		usageLine(t, "s1", "msg_1", "claude-opus-5", tokens{in: 100, out: 10, read: 200, c5m: 30},
+			map[string]string{"attributionSkill": "skill-1"}),
+		costLine(t, "s1", 0.7, nil),
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.jsonl"),
+		[]byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWindow("2030-01-01", "2030-01-31")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := AttributeEnvelope(dir, "test", w)
+	if err != nil {
+		t.Fatalf("AttributeEnvelope: %v", err)
+	}
+
+	// No windowed keyless row may exist at all, let alone carry a zero.
+	for _, m := range env.Metrics {
+		if m.Dimension != "corpus" || m.Key != "" || m.Derivation != Measured {
+			continue
+		}
+		if isZeroValue(m.Value) {
+			t.Errorf("%s = %v emitted over an empty window — omit, never zero", m.Name, m.Value)
+		}
+	}
+	for _, name := range []string{
+		"responses_naive", "responses_distinct", "responses_duplicate",
+		"duplicate_rate_percent", "fresh_tokens", "rebilled_tokens",
+		"output_tokens", "thinking_tokens", "rebill_multiplier",
+		"sessions", "sessions_with_cost_state", "sessions_without_cost_state",
+		"cost_state_coverage_percent", "attachment_events", "attachment_bytes",
+		"attachment_share_percent", "attachment_types",
+	} {
+		if m := findMetric(env, name, "corpus", ""); m != nil {
+			t.Errorf("%s = %v emitted over an empty window — omit, never zero", name, m.Value)
+		}
+	}
+	// The estimated money pair rides the same omit path.
+	for _, name := range []string{"allocated_cost_usd", "unallocated_cost_usd"} {
+		if m := findMetric(env, name, "corpus", ""); m != nil {
+			t.Errorf("%s = %v emitted over an empty window — omit, never zero", name, m.Value)
+		}
+	}
+	// Exactly one warning states the miss.
+	n := 0
+	for _, warn := range env.Warnings {
+		if strings.Contains(warn, "matched no events") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d no-match warnings, want exactly one: %v", n, env.Warnings)
+	}
+	// The C1 warning still renders — the run is windowed even when it matched
+	// nothing, and the reader is owed the four items before the empty table.
+	if !strings.Contains(strings.Join(env.Warnings, "\n"), "a lexical subset of the corpus") {
+		t.Errorf("warnings = %v, want the C1 warning", env.Warnings)
 	}
 }

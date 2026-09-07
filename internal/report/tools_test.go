@@ -22,16 +22,26 @@ func toolCorpus(t *testing.T, lines ...string) string {
 }
 
 func use(id, name string) string {
-	return `{"type":"assistant","sessionId":"s1","timestamp":"2026-09-01T10:00:00.000Z",` +
+	return useAt("2026-09-01T10:00:00.000Z", id, name)
+}
+
+// useAt is use() with the event timestamp spelled out, which is what a window
+// test has to vary.
+func useAt(ts, id, name string) string {
+	return `{"type":"assistant","sessionId":"s1","timestamp":"` + ts + `",` +
 		`"message":{"role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"` + name + `"}]}}`
 }
 
 func result(id, content string, isError bool) string {
+	return resultAt("2026-09-01T10:00:01.000Z", id, content, isError)
+}
+
+func resultAt(ts, id, content string, isError bool) string {
 	e := "false"
 	if isError {
 		e = "true"
 	}
-	return `{"type":"user","sessionId":"s1","timestamp":"2026-09-01T10:00:01.000Z",` +
+	return `{"type":"user","sessionId":"s1","timestamp":"` + ts + `",` +
 		`"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id +
 		`","content":` + content + `,"is_error":` + e + `}]}}`
 }
@@ -48,6 +58,18 @@ func metricValue(t *testing.T, env Envelope, name, dimension, key string) any {
 	return nil
 }
 
+// metricOrNil returns one flat row's value, or nil when the row is absent.
+// Absence is the assertion under test for omitted windowed metrics, so it
+// must not be fatal the way metricValue is.
+func metricOrNil(env Envelope, name, dimension, key string) any {
+	for _, m := range env.Metrics {
+		if m.Name == name && m.Dimension == dimension && m.Key == key {
+			return m.Value
+		}
+	}
+	return nil
+}
+
 // TestUnmatchedJoin is the phase gate on the loud half of the contract: a
 // tool_result whose tool_use_id matches nothing is reported, never silently
 // dropped into a bucket or added to a tool that did not produce it. The
@@ -58,7 +80,7 @@ func TestUnmatchedJoin(t *testing.T) {
 		result("toolu_1", `"hello"`, false),
 		result("toolu_ghost", `"orphaned result"`, false),
 	)
-	env, err := ToolsEnvelope(dir, "test")
+	env, err := ToolsEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("ToolsEnvelope: %v", err)
 	}
@@ -91,7 +113,7 @@ func TestUnansweredUse(t *testing.T) {
 		result("toolu_1", `"done"`, false),
 		use("toolu_2", "Read"),
 	)
-	env, err := ToolsEnvelope(dir, "test")
+	env, err := ToolsEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("ToolsEnvelope: %v", err)
 	}
@@ -113,7 +135,7 @@ func TestRollupAndMCPSplit(t *testing.T) {
 		use("t3", mcpName), result("t3", `[{"type":"text","text":"1234567"}]`, false),
 		use("t4", "mcp__context7__query-docs"), result("t4", `"xyz"`, false),
 	)
-	env, err := ToolsEnvelope(dir, "test")
+	env, err := ToolsEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("ToolsEnvelope: %v", err)
 	}
@@ -204,7 +226,7 @@ func TestExternalisedRollup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env, err := ToolsEnvelope(dir, "test")
+	env, err := ToolsEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("ToolsEnvelope: %v", err)
 	}
@@ -238,7 +260,7 @@ func TestExternalisedRollup(t *testing.T) {
 // command too: valid JSON, a derivation on every row.
 func TestToolsEnvelopeContract(t *testing.T) {
 	dir := toolCorpus(t, use("t1", "Bash"), result("t1", `"hi"`, false))
-	env, err := ToolsEnvelope(dir, "test")
+	env, err := ToolsEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("ToolsEnvelope: %v", err)
 	}
@@ -269,7 +291,7 @@ func TestRenderToolsReadsEnvelope(t *testing.T) {
 		use("t1", "Bash"), result("t1", `"hello"`, false),
 		use("t2", "mcp__context7__query-docs"), result("t2", `"docs"`, false),
 	)
-	env, err := ToolsEnvelope(dir, "test")
+	env, err := ToolsEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("ToolsEnvelope: %v", err)
 	}
@@ -294,7 +316,7 @@ func TestShareColumnIsIntegerDerived(t *testing.T) {
 		use("t1", "Alpha"), result("t1", `"same"`, false),
 		use("t2", "Bravo"), result("t2", `"same"`, false),
 	)
-	env, err := ToolsEnvelope(dir, "test")
+	env, err := ToolsEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("ToolsEnvelope: %v", err)
 	}
@@ -331,5 +353,72 @@ func TestConcernThresholds(t *testing.T) {
 		if got := concern(c.share); got != c.want {
 			t.Errorf("concern(%v) = %q, want %q", c.share, got, c.want)
 		}
+	}
+}
+
+// TestJoinSurvivesWindowCut is time-window-6's first gate: the tool_use_id →
+// name join is built corpus-wide, so a use inside the window whose result lies
+// outside still resolves — no unmatched inflation — and the out-of-window
+// result's bytes stay out of the tool's rollup.
+func TestJoinSurvivesWindowCut(t *testing.T) {
+	dir := toolCorpus(t,
+		useAt("2026-08-15T10:00:00.000Z", "t1", "Bash"),
+		resultAt("2026-08-20T10:00:00.000Z", "t1", `"hello"`, false),
+	)
+	w, err := NewWindow("2026-08-14", "2026-08-16")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := ToolsEnvelope(dir, "test", w)
+	if err != nil {
+		t.Fatalf("ToolsEnvelope: %v", err)
+	}
+
+	if got := metricValue(t, env, "unmatched_results", "corpus", ""); got != int64(0) {
+		t.Errorf("unmatched_results = %v, want 0 — a window cut must not sever a join", got)
+	}
+	// The use is in window and answered corpus-wide, so it is not unanswered:
+	// an answer outside the window is still an answer.
+	if got := metricOrNil(env, "unanswered_uses", "corpus", ""); got != int64(0) {
+		t.Errorf("unanswered_uses = %v, want 0 — a use answered outside the window is answered", got)
+	}
+	// The only Bash result is out of window, so Bash's rows are omitted —
+	// not zeroed — and its bytes exclude the result.
+	if got := metricOrNil(env, "context_bytes", "tool", "Bash"); got != nil {
+		t.Errorf("Bash context_bytes = %v emitted — the only Bash result is out of window", got)
+	}
+	// Windowed block counters count only what the window can see.
+	if got := metricValue(t, env, "tool_use_blocks", "corpus", ""); got != int64(1) {
+		t.Errorf("tool_use_blocks = %v, want 1", got)
+	}
+	if got := metricValue(t, env, "tool_result_blocks", "corpus", ""); got != int64(0) {
+		t.Errorf("tool_result_blocks = %v, want 0 — the only result is out of window", got)
+	}
+}
+
+// TestUnansweredClassificationUnderWindow pins the unanswered semantics under
+// a cut: unanswered_uses counts in-window uses lacking a corpus-wide answer.
+// A use answered outside the window is answered; a use outside the window is
+// not counted at all.
+func TestUnansweredClassificationUnderWindow(t *testing.T) {
+	dir := toolCorpus(t,
+		useAt("2026-08-15T10:00:00.000Z", "t1", "Bash"), // in-window, never answered
+		useAt("2026-08-15T11:00:00.000Z", "t2", "Read"), // in-window, answered outside
+		resultAt("2026-08-20T10:00:00.000Z", "t2", `"done"`, false),
+		useAt("2026-08-01T10:00:00.000Z", "t3", "Grep"), // out-of-window use
+	)
+	w, err := NewWindow("2026-08-14", "2026-08-16")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := ToolsEnvelope(dir, "test", w)
+	if err != nil {
+		t.Fatalf("ToolsEnvelope: %v", err)
+	}
+	if got := metricValue(t, env, "unanswered_uses", "corpus", ""); got != int64(1) {
+		t.Errorf("unanswered_uses = %v, want 1 (t1 only — t2 is answered corpus-wide, t3's use is out of window)", got)
+	}
+	if got := metricOrNil(env, "context_bytes", "tool", "Read"); got != nil {
+		t.Errorf("Read context_bytes = %v emitted — the only Read result is out of window", got)
 	}
 }

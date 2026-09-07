@@ -195,6 +195,61 @@ func TestDefaultDirPerHarness(t *testing.T) {
 	}
 }
 
+// TestSinceUntilAcceptedOnAllCommands pins time-window-1: --since/--until are
+// registered globally, like --dir/--json, so no command rejects them as an
+// unknown flag. Over an empty dir every command must succeed with a window set.
+func TestSinceUntilAcceptedOnAllCommands(t *testing.T) {
+	for _, cmd := range []string{"scan", "tools", "attribute", "corruption", "report"} {
+		var buf bytes.Buffer
+		err := run([]string{cmd, "--dir", t.TempDir(), "--since", "2026-08-01", "--until", "2026-08-15"}, &buf)
+		if err != nil {
+			t.Errorf("run([%s --since --until]) returned %v, want nil", cmd, err)
+		}
+	}
+}
+
+// TestUsageDocumentsWindowFlags pins the other half of time-window-1: usage()
+// is the only flag documentation a user ever sees, so it must name both flags
+// and both accepted shapes.
+func TestUsageDocumentsWindowFlags(t *testing.T) {
+	var buf bytes.Buffer
+	usage(&buf)
+	for _, want := range []string{"--since", "--until", "YYYY-MM-DD", "YYYY-MM-DDTHH:MM:SS.sssZ"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("usage does not mention %q:\n%s", want, buf.String())
+		}
+	}
+}
+
+// TestWindowBoundFailsBeforeCorpusRead pins time-window-2's ordering: a
+// malformed bound fails loudly, naming the two accepted shapes, before
+// resolveDir ever runs. The first case passes codex, an unknown harness — if
+// resolveDir ran first, the error would name the harness instead of the
+// shapes. The second passes a real harness over an empty dir, where the
+// OpenCode reader's own missing-database error would fire if the window
+// check came late. Neither needs a corpus fixture.
+func TestWindowBoundFailsBeforeCorpusRead(t *testing.T) {
+	for _, args := range [][]string{
+		{"tools", "--harness", "codex", "--since", "not-a-date"},
+		{"tools", "--harness", "opencode", "--dir", t.TempDir(), "--until", "2026-08-01T12:00:00Z"},
+	} {
+		var buf bytes.Buffer
+		err := run(args, &buf)
+		if err == nil {
+			t.Errorf("run(%v) returned nil, want a validation error", args)
+			continue
+		}
+		if strings.Contains(err.Error(), "harness") {
+			t.Errorf("run(%v) failed with %q — resolveDir ran before the window validation", args, err)
+		}
+		for _, want := range []string{"YYYY-MM-DD", "YYYY-MM-DDTHH:MM:SS.sssZ"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("run(%v) error %q does not name the accepted shape %q", args, err, want)
+			}
+		}
+	}
+}
+
 // TestHarnessSelectsTheReader is the only check that --harness opencode reaches
 // OpenCodeToolsEnvelope at all. Without it, replacing the dispatch branch with
 // report.ToolsEnvelope prints a Claude Code table under an OpenCode header,

@@ -27,12 +27,14 @@ type Report struct {
 	Envelope   Envelope
 }
 
-// BuildReport runs every command and merges the results.
+// BuildReport runs every command and merges the results. The window threads
+// into every pass: a windowed report is four windowed envelopes, and the
+// merged envelope carries the bounds via envs[0].
 //
 // progress names each pass as it starts; nil is silent. It is a separate
 // writer from the one the report is rendered to on purpose — the caller sends
 // it to stderr so a redirect still yields a file that is only the report.
-func BuildReport(dir, version string, progress io.Writer) (Report, error) {
+func BuildReport(dir, version string, w Window, progress io.Writer) (Report, error) {
 	var (
 		r   Report
 		err error
@@ -45,19 +47,19 @@ func BuildReport(dir, version string, progress io.Writer) (Report, error) {
 		}
 	}
 	say("scanning…")
-	if r.Scan, err = ScanEnvelope(dir, version); err != nil {
+	if r.Scan, err = ScanEnvelope(dir, version, w); err != nil {
 		return Report{}, err
 	}
 	say("tools…")
-	if r.Tools, err = ToolsEnvelope(dir, version); err != nil {
+	if r.Tools, err = ToolsEnvelope(dir, version, w); err != nil {
 		return Report{}, err
 	}
 	say("attribute…")
-	if r.Attribute, err = AttributeEnvelope(dir, version); err != nil {
+	if r.Attribute, err = AttributeEnvelope(dir, version, w); err != nil {
 		return Report{}, err
 	}
 	say("corruption…")
-	if r.Corruption, err = CorruptionEnvelope(dir, version); err != nil {
+	if r.Corruption, err = CorruptionEnvelope(dir, version, w); err != nil {
 		return Report{}, err
 	}
 	r.Envelope = merge(dir, version, []Envelope{r.Scan, r.Tools, r.Attribute, r.Corruption})
@@ -79,12 +81,13 @@ type seenMetric struct{ value, command string }
 // artifact that hides it is worth nothing.
 func merge(dir, version string, envs []Envelope) Envelope {
 	out := Envelope{
-		Tool:     "tare",
-		Version:  version,
-		Command:  "report",
-		Corpus:   Corpus{Dir: dir},
-		Metrics:  []Metric{},
-		Warnings: []string{},
+		Tool:          "tare",
+		SchemaVersion: SchemaVersion,
+		Version:       version,
+		Command:       "report",
+		Corpus:        Corpus{Dir: dir},
+		Metrics:       []Metric{},
+		Warnings:      []string{},
 	}
 	seen := map[metricID]seenMetric{}
 	for _, env := range envs {
@@ -121,6 +124,8 @@ func merge(dir, version string, envs []Envelope) Envelope {
 	out.Corpus.Bytes = envs[0].Corpus.Bytes
 	out.Corpus.From = envs[0].Corpus.From
 	out.Corpus.To = envs[0].Corpus.To
+	out.Corpus.Since = envs[0].Corpus.Since
+	out.Corpus.Until = envs[0].Corpus.Until
 	for _, env := range envs[1:] {
 		if env.Corpus.Files != out.Corpus.Files || env.Corpus.Bytes != out.Corpus.Bytes {
 			out.Warnings = append(out.Warnings, fmt.Sprintf(

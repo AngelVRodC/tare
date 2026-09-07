@@ -198,7 +198,7 @@ func openCodeFixtureEnvelope(t *testing.T, servers []string, serverErr error) En
 		t.Fatalf("openCodeRows: %v", err)
 	}
 	// 4,284,416 is the measured size of the live opencode.db.
-	return openCodeEnvelope("/oc", "test", rows, span, servers, serverErr, 4284416)
+	return openCodeEnvelope("/oc", "test", rows, span, servers, serverErr, 4284416, Window{})
 }
 
 // openCodeServerList is what openCodeServers returns for the live config:
@@ -379,7 +379,7 @@ func TestOpenCodeEnvelopeOmitsNullErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openCodeRows: %v", err)
 	}
-	env := openCodeEnvelope("/oc", "test", rows, span, openCodeServerList, nil, 4096)
+	env := openCodeEnvelope("/oc", "test", rows, span, openCodeServerList, nil, 4096, Window{})
 	if err := env.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}

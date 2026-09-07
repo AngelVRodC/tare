@@ -1,6 +1,11 @@
 package report
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 // TestFormatValueByUnit pins the shape of every unit the envelope carries. The
 // unit decides the rendering, so a regression here is a regression in every
@@ -54,6 +59,29 @@ func TestFormatValueByUnit(t *testing.T) {
 	for _, c := range cases {
 		if got := formatValue(c.value, c.unit); got != c.want {
 			t.Errorf("formatValue(%v, %q) = %q, want %q", c.value, c.unit, got, c.want)
+		}
+	}
+}
+
+// TestFormatValueMicrodollars pins the money rendering: an integer count of
+// microdollars renders through formatUSD as the dollar amount it is. The int
+// case is accepted alongside int64, per the bytes-case precedent.
+func TestFormatValueMicrodollars(t *testing.T) {
+	cases := []struct {
+		value any
+		want  string
+	}{
+		{int64(1234567), formatUSD(1.234567)},
+		// Sub-cent allocations are the point of the per-skill table: they
+		// render exactly, never rounded away to $0.00.
+		{int64(149), formatUSD(0.000149)},
+		{int64(0), "$0.00"},
+		{int64(-1234567), formatUSD(-1.234567)},
+		{1234567, formatUSD(1.234567)},
+	}
+	for _, c := range cases {
+		if got := formatValue(c.value, "microdollars"); got != c.want {
+			t.Errorf("formatValue(%v, %q) = %q, want %q", c.value, "microdollars", got, c.want)
 		}
 	}
 }
@@ -123,6 +151,226 @@ func TestLabelFallsThrough(t *testing.T) {
 	for _, c := range cases {
 		if got := label(c.name); got != c.want {
 			t.Errorf("label(%q) = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// scanFixture writes one transcript file holding the given lines and returns
+// its directory. Every fixture stays under t.TempDir(); the live corpus is
+// never a test input.
+func scanFixture(t *testing.T, lines ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.jsonl"),
+		[]byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// scanEvent is a minimal decoded transcript event with a timestamp. ts may be
+// empty, which is how an untimestamped event type is written into a fixture.
+func scanEvent(ts, typ string) string {
+	line := `{"type":"` + typ + `","sessionId":"s1"`
+	if ts != "" {
+		line += `,"timestamp":"` + ts + `"`
+	}
+	return line + `}`
+}
+
+// TestWindowedScanCountsEventsNotLines is the time-window-3 gate: `events`
+// counts in-window events, never stats.Lines, which accumulates before the
+// window can speak — a line the window cannot place (out of range, or refused
+// by the decoder) must not inflate it. files, bytes and parse_errors stay
+// corpus-wide, which is what makes the two figures differ here.
+func TestWindowedScanCountsEventsNotLines(t *testing.T) {
+	dir := scanFixture(t,
+		scanEvent("2026-08-01T10:00:00.000Z", "user"),
+		scanEvent("2026-08-15T12:00:00.000Z", "assistant"),
+		scanEvent("2026-08-20T09:00:00.000Z", "user"),
+		"not json at all",
+	)
+	w, err := NewWindow("2026-08-10", "2026-08-16")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := ScanEnvelope(dir, "test", w)
+	if err != nil {
+		t.Fatalf("ScanEnvelope: %v", err)
+	}
+
+	// One event sits inside the window; one is out of range below it, one
+	// out of range above it, and one never decoded. The old stats.Lines
+	// figure for this corpus was 4.
+	if got := metricValue(t, env, "events", "corpus", ""); got != 1 {
+		t.Errorf("events = %v, want 1 — in-window events, not lines", got)
+	}
+	if got := metricValue(t, env, "files", "corpus", ""); got != 1 {
+		t.Errorf("files = %v, want 1 — corpus totals stay corpus-wide", got)
+	}
+	if got := metricValue(t, env, "parse_errors", "corpus", ""); got != 1 {
+		t.Errorf("parse_errors = %v, want 1 — corpus-wide under a window", got)
+	}
+	// Per-type rows follow the window too.
+	if got := metricValue(t, env, "events", "type", "assistant"); got != 1 {
+		t.Errorf("events/type/assistant = %v, want 1", got)
+	}
+	for _, m := range env.Metrics {
+		if m.Name == "events" && m.Dimension == "type" && m.Key == "user" {
+			t.Errorf("events/type/user = %v emitted — both user events sit outside the window", m.Value)
+		}
+	}
+}
+
+// TestBareDateUntilIncludesWholeDay is the time-window-4 asymmetry gate: a
+// bare-date --until compares day(ts) <= until, so the whole named day is in —
+// its first midnight and its last millisecond alike — and the next day is out.
+func TestBareDateUntilIncludesWholeDay(t *testing.T) {
+	dir := scanFixture(t,
+		scanEvent("2026-08-15T00:00:00.000Z", "user"),
+		scanEvent("2026-08-15T23:59:59.999Z", "assistant"),
+		scanEvent("2026-08-16T00:00:00.000Z", "user"),
+	)
+	w, err := NewWindow("", "2026-08-15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := ScanEnvelope(dir, "test", w)
+	if err != nil {
+		t.Fatalf("ScanEnvelope: %v", err)
+	}
+	if got := metricValue(t, env, "events", "corpus", ""); got != 2 {
+		t.Errorf("events = %v, want 2 — a bare --until includes the whole named day", got)
+	}
+}
+
+// TestFullPrecisionUntilInclusive pins the other half of time-window-4: a
+// full-precision --until includes the event exactly at the instant.
+func TestFullPrecisionUntilInclusive(t *testing.T) {
+	dir := scanFixture(t,
+		scanEvent("2026-08-15T11:59:59.999Z", "assistant"),
+		scanEvent("2026-08-15T12:00:00.000Z", "user"),
+		scanEvent("2026-08-15T12:00:00.001Z", "assistant"),
+	)
+	w, err := NewWindow("2026-08-15T00:00:00.000Z", "2026-08-15T12:00:00.000Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := ScanEnvelope(dir, "test", w)
+	if err != nil {
+		t.Fatalf("ScanEnvelope: %v", err)
+	}
+	if got := metricValue(t, env, "events", "corpus", ""); got != 2 {
+		t.Errorf("events = %v, want 2 — the event exactly at --until is included", got)
+	}
+	if got := metricValue(t, env, "events", "type", "user"); got != 1 {
+		t.Errorf("events/type/user = %v, want 1 — the boundary event is the user's", got)
+	}
+}
+
+// TestParseErrorsStayCorpusWide is time-window-7: a line the decoder refused
+// has no timestamp to window by, so parse_errors covers the whole corpus even
+// when the window matches nothing.
+func TestParseErrorsStayCorpusWide(t *testing.T) {
+	dir := scanFixture(t,
+		scanEvent("2026-08-15T12:00:00.000Z", "user"),
+		"{",
+	)
+	w, err := NewWindow("2027-01-01", "2027-01-31")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := ScanEnvelope(dir, "test", w)
+	if err != nil {
+		t.Fatalf("ScanEnvelope: %v", err)
+	}
+	if got := metricValue(t, env, "parse_errors", "corpus", ""); got != 1 {
+		t.Errorf("parse_errors = %v, want 1 — corpus-wide under a window", got)
+	}
+	if got := metricValue(t, env, "files", "corpus", ""); got != 1 {
+		t.Errorf("files = %v, want 1 — corpus totals stay corpus-wide", got)
+	}
+}
+
+// TestEmptyWindowOmitsNotZeroes is time-window-8: when the window matches no
+// events, the windowed KEYLESS rows are omitted — a measured zero the window
+// emptied is an over-claim nothing downstream can catch — while corpus rows
+// still render (they remain true) and exactly one warning states the miss.
+func TestEmptyWindowOmitsNotZeroes(t *testing.T) {
+	dir := scanFixture(t,
+		scanEvent("2026-08-15T12:00:00.000Z", "user"),
+		scanEvent("2026-08-15T13:00:00.000Z", "assistant"),
+	)
+	w, err := NewWindow("2027-01-01", "2027-01-31")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := ScanEnvelope(dir, "test", w)
+	if err != nil {
+		t.Fatalf("ScanEnvelope: %v", err)
+	}
+
+	for _, name := range []string{"events", "distinct_event_types", "distinct_cli_versions"} {
+		if m := findMetric(env, name, "corpus", ""); m != nil {
+			t.Errorf("%s = %v emitted over an empty window — omit, never zero", name, m.Value)
+		}
+	}
+	// Corpus rows still render: they remain true.
+	for _, name := range []string{"files", "bytes"} {
+		if findMetric(env, name, "corpus", "") == nil {
+			t.Errorf("%s was omitted — corpus totals stay corpus-wide even when the window is empty", name)
+		}
+	}
+	// Exactly one warning states the miss.
+	n := 0
+	for _, warn := range env.Warnings {
+		if strings.Contains(warn, "matched no events") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d no-match warnings, want exactly one: %v", n, env.Warnings)
+	}
+	// Corpus.Since/Until carry the bounds the run was measured with.
+	if env.Corpus.Since != "2027-01-01" || env.Corpus.Until != "2027-01-31" {
+		t.Errorf("corpus window = %q..%q, want 2027-01-01..2027-01-31", env.Corpus.Since, env.Corpus.Until)
+	}
+}
+
+// TestWindowedWarningC1Rendered pins time-window-9 by rendering, not by
+// Validate: a windowed run's output names all four C1 items — the subset
+// semantics, what stayed corpus-wide, the untimestamped types excluded (named
+// unavailable, never zero) and the session granularity of cost.
+func TestWindowedWarningC1Rendered(t *testing.T) {
+	dir := scanFixture(t,
+		scanEvent("2026-08-15T12:00:00.000Z", "user"),
+		// A type with no timestamp: the window cannot place it, so it is
+		// excluded from the counts and named in the warning.
+		scanEvent("", "mode"),
+	)
+	w, err := NewWindow("2026-08-01", "2026-08-31")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := ScanEnvelope(dir, "test", w)
+	if err != nil {
+		t.Fatalf("ScanEnvelope: %v", err)
+	}
+	var buf strings.Builder
+	if err := RenderScan(&buf, env); err != nil {
+		t.Fatalf("RenderScan: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"a lexical subset of the corpus", // (a) subset semantics
+		"remain whole-corpus",            // (b) corpus-wide items
+		"mode",                           // (c) the untimestamped type, by name
+		"reported unavailable, not zero", // (c) omission, never a zero
+		"session-granular",               // (d) cost joins at session granularity
+		"billed wholly to it",            // (d)
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("windowed output is missing %q\n%s", want, out)
 		}
 	}
 }

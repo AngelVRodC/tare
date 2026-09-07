@@ -19,13 +19,24 @@ import (
 // ScanEnvelope walks dir and returns the corpus inventory: files, bytes, date
 // range, per-type and per-version event counts, the top-level vs `subagents/`
 // split, unknown types and the retention gap. Every row is measured.
-func ScanEnvelope(dir, version string) (Envelope, error) {
+//
+// Under a window, the event inventory counts only in-window events — `events`
+// is counted here, after the gate, never read off stats.Lines, which
+// accumulates before the window can speak (time-window-3). Corpus totals stay
+// corpus-wide: a parse-failed or unknown line has no timestamp to window by
+// (time-window-7).
+func ScanEnvelope(dir, version string, w Window) (Envelope, error) {
 	types := map[string]int{}
 	versions := map[string]int{}
-	b := newBuilder(dir, version, "scan")
+	b := newBuilder(dir, version, "scan", w)
 
+	var events int
 	stats, err := transcript.Scan(dir, func(ev *transcript.Event) {
-		b.seeTime(ev.Timestamp)
+		b.seeTime(ev.Timestamp, ev.Type)
+		if w.Active() && !w.Includes(ev.Timestamp) {
+			return
+		}
+		events++
 		types[ev.Type]++
 		if ev.Version != "" {
 			versions[ev.Version]++
@@ -36,15 +47,15 @@ func ScanEnvelope(dir, version string) (Envelope, error) {
 	}
 
 	topLevel := stats.Files - stats.SubagentFiles
-	add := b.add
+	add, addWin := b.add, b.addWin
 	add("files", stats.Files, "files")
 	add("bytes", stats.Bytes, "bytes")
-	add("events", stats.Lines, "events")
+	addWin("events", events, "events")
 	add("files_top_level", topLevel, "files")
 	add("files_subagent", stats.SubagentFiles, "files")
-	add("distinct_event_types", len(types), "types")
+	addWin("distinct_event_types", len(types), "types")
 	add("known_event_types", transcript.KnownTypeCount(), "types")
-	add("distinct_cli_versions", len(versions), "versions")
+	addWin("distinct_cli_versions", len(versions), "versions")
 	add("parse_errors", stats.ParseErrors, "errors")
 	// Emitted only when there is something to report: a row of zero on every
 	// clean corpus would say nothing, and the warning is what carries the
@@ -322,7 +333,19 @@ func formatValue(v any, unit string) string {
 		if n, ok := v.(float64); ok {
 			return strconv.FormatFloat(n, 'f', 1, 64) + "%"
 		}
+	case "microdollars":
+		// Money is an integer count of microdollars (microdollar-cost-3);
+		// int is accepted beside int64, per the bytes-case precedent.
+		switch n := v.(type) {
+		case int:
+			return formatUSD(float64(n) / 1e6)
+		case int64:
+			return formatUSD(float64(n) / 1e6)
+		}
 	case "usd":
+		// Zero call sites remain — every money row is microdollars now — but
+		// dropping this case would send a stray float money value to the 'g'
+		// fallback and mis-render it silently.
 		if n, ok := v.(float64); ok {
 			return formatUSD(n)
 		}

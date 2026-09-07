@@ -237,7 +237,12 @@ var labels = map[string]string{
 	"unallocated_cost_usd":        "Cost with no events to allocate across",
 
 	// corruption
-	"error_rate_percent":      "Share of calls that errored",
+	"error_rate_percent": "Share of calls that errored",
+	// A denial was blocked before the tool ran, so it is named for what
+	// happened rather than folded into a failure the tool never had.
+	"denied":                  "Calls the harness denied",
+	"failures":                "Calls that ran and failed",
+	"failure_rate_percent":    "Share of calls that failed",
 	"empty_results":           "Results that came back empty",
 	"empty_rate_percent":      "Share of results that were empty",
 	"truncated_results":       "Results carrying a truncation marker",

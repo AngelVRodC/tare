@@ -127,6 +127,86 @@ func TestScanWalk(t *testing.T) {
 	}
 }
 
+// TestWorkflowJournalIsNotATranscript is the regression test for issue #3.
+//
+// Claude Code writes a Workflow-tool journal at
+// <session>/subagents/workflows/wf_*/journal.jsonl — a sibling of the subagent
+// transcripts, holding the resume cache rather than a conversation. Counting
+// it as a transcript inflated four inventory rows and reported its `failed`
+// record as an unrecognised transcript event type.
+//
+// Measured on a 41-file corpus: 4 journals, 34 records, and every occurrence
+// of `started`, `result` and `failed` in the event-type table came from one.
+func TestWorkflowJournalIsNotATranscript(t *testing.T) {
+	dir := writeCorpus(t, map[string]string{
+		"proj/sess.jsonl": `{"type":"user","sessionId":"s1","timestamp":"2026-09-01T00:00:00.000Z"}` + "\n",
+		"proj/sess/subagents/workflows/wf_x/journal.jsonl": `{"type":"started","key":"v2:abc","agentId":"a1"}` + "\n" +
+			`{"type":"result","key":"v2:abc","agentId":"a1","result":{}}` + "\n" +
+			`{"type":"failed","key":"v2:def","agentId":"a2"}` + "\n",
+	})
+
+	visited := 0
+	stats, err := Scan(dir, func(*Event) { visited++ })
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if stats.Files != 1 {
+		t.Errorf("Files = %d, want 1 — a journal is not a transcript", stats.Files)
+	}
+	if stats.SubagentFiles != 0 {
+		t.Errorf("SubagentFiles = %d, want 0 — a journal under subagents/ is not a subagent transcript", stats.SubagentFiles)
+	}
+	if stats.Lines != 1 {
+		t.Errorf("Lines = %d, want 1 — the 3 journal records are not transcript events", stats.Lines)
+	}
+	if visited != 1 {
+		t.Errorf("visited %d events, want 1 — a journal record must not reach a command", visited)
+	}
+	if len(stats.UnknownTypes) != 0 {
+		t.Errorf("UnknownTypes = %v, want empty — those are journal record types", stats.UnknownTypes)
+	}
+	if stats.NonTranscriptFiles != 1 {
+		t.Errorf("NonTranscriptFiles = %d, want 1 — the journal is reported, not dropped", stats.NonTranscriptFiles)
+	}
+	if stats.NonTranscriptRecords != 3 {
+		t.Errorf("NonTranscriptRecords = %d, want 3", stats.NonTranscriptRecords)
+	}
+	// Bytes stay whole: the row they feed is labelled bytes on disk.
+	if stats.Bytes == 0 {
+		t.Error("Bytes = 0, want the journal's bytes still counted on disk")
+	}
+}
+
+// TestEmptyAndBrokenFilesStayTranscripts is the other half of the rule above:
+// a file is reclassified only when it holds journal records AND no transcript
+// line. An empty transcript and an undecodable one are findings, and quietly
+// moving either out of the transcript count would hide them.
+func TestEmptyAndBrokenFilesStayTranscripts(t *testing.T) {
+	dir := writeCorpus(t, map[string]string{
+		"empty.jsonl":  "",
+		"broken.jsonl": `{"type":` + "\n",
+		// A journal record beside a real event: the file is still a transcript.
+		"mixed.jsonl": `{"type":"user","sessionId":"s1"}` + "\n" +
+			`{"type":"started","key":"v2:abc","agentId":"a1"}` + "\n",
+	})
+	stats, err := Scan(dir, func(*Event) {})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if stats.Files != 3 {
+		t.Errorf("Files = %d, want 3 — empty and broken files are transcripts", stats.Files)
+	}
+	if stats.NonTranscriptFiles != 0 {
+		t.Errorf("NonTranscriptFiles = %d, want 0", stats.NonTranscriptFiles)
+	}
+	if stats.ParseErrors != 1 {
+		t.Errorf("ParseErrors = %d, want 1 — a journal rule must not excuse a broken line", stats.ParseErrors)
+	}
+	if stats.NonTranscriptRecords != 1 {
+		t.Errorf("NonTranscriptRecords = %d, want 1 — the record in mixed.jsonl is still excluded", stats.NonTranscriptRecords)
+	}
+}
+
 // TestMalformedLineCounted pins the other half: a line json cannot decode is a
 // counted defect, not a crash and not a silent drop.
 func TestMalformedLineCounted(t *testing.T) {

@@ -27,6 +27,37 @@ func TestHelpExitsZeroOnStdout(t *testing.T) {
 	}
 }
 
+// TestVersion pins the surface a release depends on: all three spellings print
+// the same line on stdout and succeed. `tare scan --version` stays an error
+// because the check runs before the parse rather than as a registered flag —
+// the same scoping rule --harness and --top follow.
+func TestVersion(t *testing.T) {
+	var first string
+	for _, spelling := range []string{"--version", "-version", "version"} {
+		var buf bytes.Buffer
+		if err := run([]string{spelling}, &buf); err != nil {
+			t.Errorf("run(%q) returned %v, want nil", spelling, err)
+		}
+		if got := strings.TrimSpace(buf.String()); got == "" || !strings.Contains(got, version) {
+			t.Errorf("run(%q) printed %q, want a line carrying %q", spelling, buf.String(), version)
+		}
+		if first == "" {
+			first = buf.String()
+		} else if buf.String() != first {
+			t.Errorf("run(%q) printed different text than --version", spelling)
+		}
+	}
+
+	var buf bytes.Buffer
+	err := run([]string{"scan", "--version"}, &buf)
+	if err == nil {
+		t.Fatal("run([scan --version]) returned nil, want an error — the flag means nothing there")
+	}
+	if !strings.Contains(err.Error(), "not defined") {
+		t.Errorf("run([scan --version]) failed with %q, want the flag to be undefined there", err)
+	}
+}
+
 // TestLeadingFlagSaysOrder covers the error the README already contradicted: a
 // flag before the command is an ordering mistake, not an unknown command.
 func TestLeadingFlagSaysOrder(t *testing.T) {

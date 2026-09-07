@@ -16,7 +16,7 @@ compatibility: >-
   specific harness.
 metadata:
   author: AngelVRodC
-  version: "1.0.0"
+  version: "1.1.0"
 allowed-tools: Read, Grep, Glob, Bash(tare:*)
 ---
 
@@ -66,7 +66,7 @@ Flags go after the command, always: `tare <command> [flags]`.
 | Which tool dominates context bytes? Which tools error? | `tare tools` | one small table |
 | Same, over the OpenCode database | `tare tools --harness opencode` | one small table |
 | How many tokens and dollars per skill, plugin, agent, MCP server? | `tare attribute` | several tables |
-| Is a tool corrupting what it returns: errors, empties, truncation? | `tare corruption` | compact tables |
+| Is a tool corrupting what it returns: failures, denials, empties, truncation? | `tare corruption` | compact tables |
 | Everything composed into one artifact for later reading? | `tare report > report.md` | file, not terminal |
 
 Flag scope (a flag exists only where it means something):
@@ -98,7 +98,11 @@ references/metrics.md.
 ## Step 4 — turn a finding into an actionable
 
 A cost figure alone justifies nothing. An actionable has three parts: the
-measured share, the failure rate, and the question only the user can answer.
+measured share, the error rate, and the question only the user can answer.
+
+Say "errors", not "fails", when the rate came from `tare tools`: that count
+includes calls the harness denied before the tool ran. Only `tare corruption`
+separates the two, as `denied` and `failures`.
 
 Refusal shape:
 
@@ -122,7 +126,10 @@ Any corpus that records tool names and result sizes.
 2. Find the row with the largest `context_bytes` in the `tool` table.
 3. N = that row's `context_bytes` divided by the corpus total `context_bytes`
    (the envelope carries the total as a corpus-wide metric). M = that row's
-   `errors` divided by that row's `calls`.
+   `errors` divided by that row's `calls`. `tools` reports `errors` alone, and
+   that count includes calls the harness denied before the tool ever ran — so
+   word it as "errors on M%", never as "fails on M%". For a failure rate with
+   the denials taken out, read `failures` from `tare corruption` instead.
 4. Deliver the actionable in the refusal shape, then the value question.
 5. If the row is an MCP tool, check the `mcp_server` table too — bytes roll up
    per server there. This is the byte mechanism, parsed from the

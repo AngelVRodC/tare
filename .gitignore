@@ -4,9 +4,11 @@
 thoughts/
 .atl/
 
-# Local agent tooling (project-scoped Claude Code skills)
-.claude/
 CLAUDE.md
+CLAUDE.local.md
+
+# Machine-specific code index. Rebuilt per checkout, never portable.
+.codegraph/
 
 # Go
 tare

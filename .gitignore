@@ -10,6 +10,6 @@ CLAUDE.local.md
 .codegraph/
 
 # Go
-tare
+/tare
 *.test
 *.out

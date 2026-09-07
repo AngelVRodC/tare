@@ -156,7 +156,7 @@ Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
 | `tare scan` | What is in the corpus at all — files, bytes, date range, event types, CLI versions, retention gap | — |
 | `tare tools` | What each tool cost — calls and context bytes in; errors and produced bytes where recorded | `--harness` |
 | `tare attribute` | Which skill / plugin / agent / MCP server the tokens belong to, and how much prior context was re-billed | `--top`, `--all` |
-| `tare corruption` | What share of calls errored, returned nothing, or carried a truncation marker | `--top`, `--all` |
+| `tare corruption` | What share of calls failed, how many the harness denied instead, and what returned nothing or carried a truncation marker | `--top`, `--all` |
 | `tare report` | All four, composed into one reproducible artifact | — |
 
 | Flag given alone | Effect |

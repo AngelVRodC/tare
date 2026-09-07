@@ -61,6 +61,122 @@ func resultDenied(id, content, kind string) string {
 		`","content":` + content + `,"is_error":true}]}}`
 }
 
+// resultPairDenied is one user event carrying two errored tool_result blocks
+// under a single toolDenialKind — the shape the ambiguity warning covers.
+//
+// toolDenialKind is per event and is_error is per block, so this is the one
+// transcript shape where the two are not one-to-one. It was measured zero
+// times across 1,045 tool calls, which is why it is a fixture rather than a
+// corpus figure.
+func resultPairDenied(idA, idB, kind string) string {
+	return `{"type":"user","sessionId":"s1","timestamp":"2026-09-01T10:00:02.000Z",` +
+		`"toolDenialKind":"` + kind + `",` +
+		`"message":{"role":"user","content":[` +
+		`{"type":"tool_result","tool_use_id":"` + idA + `","content":"blocked","is_error":true},` +
+		`{"type":"tool_result","tool_use_id":"` + idB + `","content":"blocked","is_error":true}]}}`
+}
+
+// TestAmbiguousDenialIsAnUpperBound covers the multi-result path.
+//
+// One event's toolDenialKind is attributed to every errored result in it, so
+// those rows are an upper bound and the warning has to say so. The invariant
+// that keeps the bound honest is denied + failures == errors: the split is a
+// partition of the error count, never an addition to it, which is also what
+// keeps `errors` agreeing with the value `tools` emits.
+func TestAmbiguousDenialIsAnUpperBound(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // hermetic: this gate is transcript-only
+
+	t.Run("two errored results under one kind", func(t *testing.T) {
+		dir := toolCorpus(t,
+			use("t1", "Bash"), use("t2", "Grep"),
+			resultPairDenied("t1", "t2", "permission-rule"),
+			use("t3", "Read"), resultDenied("t3", `"blocked"`, "user-rejected"),
+		)
+		env, err := CorruptionEnvelope(dir, "test")
+		if err != nil {
+			t.Fatalf("CorruptionEnvelope: %v", err)
+		}
+
+		for _, c := range []struct {
+			name, dim, key string
+			want           any
+		}{
+			{"errors", "corpus", "", int64(3)},
+			{"denied", "corpus", "", int64(3)},
+			{"failures", "corpus", "", int64(0)},
+			// The one denial kind is charged to both tools it blocked.
+			{"denied", "tool", "Bash", int64(1)},
+			{"denied", "tool", "Grep", int64(1)},
+			{"denied", "denial_kind", "permission-rule", int64(2)},
+			{"denied", "denial_kind", "user-rejected", int64(1)},
+		} {
+			if got := metricValue(t, env, c.name, c.dim, c.key); got != c.want {
+				t.Errorf("%s/%s/%s = %v, want %v", c.name, c.dim, c.key, got, c.want)
+			}
+		}
+
+		// denied + failures == errors, exactly. Not merely <=: every errored
+		// result increments one side or the other and never both or neither.
+		errs := metricValue(t, env, "errors", "corpus", "").(int64)
+		den := metricValue(t, env, "denied", "corpus", "").(int64)
+		fail := metricValue(t, env, "failures", "corpus", "").(int64)
+		if den+fail != errs {
+			t.Errorf("denied(%d) + failures(%d) = %d, want errors(%d) exactly", den, fail, den+fail, errs)
+		}
+
+		if !strings.Contains(strings.Join(env.Warnings, "\n"), "upper bound") {
+			t.Errorf("the ambiguous event must be reported as an upper bound: %v", env.Warnings)
+		}
+	})
+
+	// The false-positive gate: one result per event is the measured shape, and
+	// it must not draw the ambiguity warning.
+	t.Run("one result per event stays quiet", func(t *testing.T) {
+		dir := toolCorpus(t,
+			use("t1", "Bash"), resultDenied("t1", `"blocked"`, "permission-rule"),
+			use("t2", "Bash"), result("t2", `"Exit code 1"`, true),
+		)
+		env, err := CorruptionEnvelope(dir, "test")
+		if err != nil {
+			t.Fatalf("CorruptionEnvelope: %v", err)
+		}
+		if strings.Contains(strings.Join(env.Warnings, "\n"), "upper bound") {
+			t.Errorf("unambiguous events must not warn: %v", env.Warnings)
+		}
+	})
+}
+
+// TestRankingSortsFailuresBeforeErrors pins the row order the split changed.
+//
+// Read errors three times and every one is a denial; Bash errors once and it
+// is a real failure. Ranking on errors puts Read first, which is the same
+// conflation the split removes, so failures outrank errors.
+func TestRankingSortsFailuresBeforeErrors(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // hermetic: this gate is transcript-only
+	dir := toolCorpus(t,
+		use("r1", "Read"), resultDenied("r1", `"blocked"`, "user-rejected"),
+		use("r2", "Read"), resultDenied("r2", `"blocked"`, "user-rejected"),
+		use("r3", "Read"), resultDenied("r3", `"blocked"`, "user-rejected"),
+		use("b1", "Bash"), result("b1", `"Exit code 1"`, true),
+	)
+	env, err := CorruptionEnvelope(dir, "test")
+	if err != nil {
+		t.Fatalf("CorruptionEnvelope: %v", err)
+	}
+	rows := groupRows(env.Metrics, "tool")
+	if len(rows) != 2 {
+		t.Fatalf("tool rows = %d, want 2", len(rows))
+	}
+	if rows[0].key != "Bash" {
+		t.Errorf("first row = %q, want Bash — 1 failure outranks 3 denials", rows[0].key)
+	}
+	// And the premise: Read really does carry more errors than Bash, so this
+	// would fail if the sort still keyed on errors.
+	if got := metricValue(t, env, "errors", "tool", "Read"); got != int64(3) {
+		t.Fatalf("Read errors = %v, want 3 — the fixture no longer tests the ordering", got)
+	}
+}
+
 // TestDenialIsNotAFailure is the regression test for issue #4.
 //
 // This command measures evidence that a tool altered an answer. A policy

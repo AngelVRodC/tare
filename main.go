@@ -268,6 +268,7 @@ commands:
   report     all four composed into one reproducible artifact (Markdown, or --json)
 
 flags (given alone):
+  --help     print this message and exit
   --version  print the version and exit
 
 flags (given after the command):

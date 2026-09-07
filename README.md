@@ -67,15 +67,29 @@ see [OpenCode](#opencode).
 
 ## Install
 
+Go 1.27 or later.
+
 ```bash
-go build -o tare .
+go install github.com/AngelVRodC/tare@latest
 ```
 
-Go 1.27 or later, and no Go modules to fetch — see
-[Dependencies](#dependencies). One local binary is not optional though:
-`--harness opencode` needs `sqlite3` on `PATH` and fails without it. macOS and
-most Linux distributions ship it. Everything else runs on the standard library
-alone.
+Puts `tare` in `$(go env GOPATH)/bin`. Add it to PATH if it is not there
+already.
+
+Build from source instead:
+
+```bash
+git clone https://github.com/AngelVRodC/tare.git
+cd tare && go build -o tare .
+```
+
+`--harness opencode` also needs the `sqlite3` binary on PATH.
+
+## Updating
+
+```bash
+go install github.com/AngelVRodC/tare@latest
+```
 
 ## Quick start
 
@@ -134,15 +148,21 @@ your own numbers will differ — see [Reproducibility](#reproducibility).
 
 Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
 `tare --help`, `tare -h` and `tare help` all print this list to stdout and exit
-0, so `tare --help | head` works.
+0, so `tare --help | head` works. `tare --version`, `tare -version` and
+`tare version` print the version the same way.
 
 | Command | What it answers | Own flags |
 |---|---|---|
 | `tare scan` | What is in the corpus at all — files, bytes, date range, event types, CLI versions, retention gap | — |
 | `tare tools` | What each tool cost — calls and context bytes in; errors and produced bytes where recorded | `--harness` |
 | `tare attribute` | Which skill / plugin / agent / MCP server the tokens belong to, and how much prior context was re-billed | `--top`, `--all` |
-| `tare corruption` | What share of calls errored, returned nothing, or carried a truncation marker | `--boost-deep`, `--top`, `--all` |
+| `tare corruption` | What share of calls errored, returned nothing, or carried a truncation marker | `--top`, `--all` |
 | `tare report` | All four, composed into one reproducible artifact | — |
+
+| Flag given alone | Effect |
+|---|---|
+| `--help` | Print this message and exit |
+| `--version` | Print the version and exit |
 
 | Global flag | Default | Effect |
 |---|---|---|
@@ -151,23 +171,18 @@ Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
 
 `--harness` is `tools` only: which harness to read, claude-code (default) or
 opencode. Registered there and nowhere else, so `tare scan --harness opencode`
-is an error rather than a flag that silently does nothing — the same rule
-`--boost-deep` follows. `scan`, `attribute`, `corruption` and `report` read
-Claude Code and nothing else. See [OpenCode](#opencode) for what the second
-reader can and cannot measure.
-
-`--boost-deep` joins every Boost MCP call from its history DB via `sqlite3`
-rather than the 100-row JSON sample. It is registered on `corruption` only, on
-purpose, so `tare scan --boost-deep` is an error rather than a flag that
-silently does nothing.
+is an error rather than a flag that silently does nothing. `scan`, `attribute`,
+`corruption` and `report` read Claude Code and nothing else. See
+[OpenCode](#opencode) for what the second reader can and cannot measure.
 
 `--top N` sets how many rows each dimension prints — 15 by default, `0` for all
 of them — and `--all` is `--top 0` under another name. A table that was cut says
 so and names the flag: `showing top 15 of 67 skill rows — use --all`. Both are
 registered on `attribute` and `corruption` only, for the same reason
-`--boost-deep` is: `scan` and `tools` print every row already, and the
-Markdown `tare report` never truncates at all — a file is not a terminal, and
-`--all` is not spellable after the fact by whoever reads the file.
+`--harness` is registered on `tools` only: `scan` and `tools` print every row
+already, and the Markdown `tare report` never truncates at all — a file is not
+a terminal, and `--all` is not spellable after the fact by whoever reads the
+file.
 
 `tare report` writes the artifact: Markdown for a reader, `--json` for a
 machine. Both are self-contained — the header records the tool version, the
@@ -368,11 +383,9 @@ diff a.json b.json      # no output — the two runs are byte-identical
   seam. Two readers, one of which supplies one of the five commands, is not yet
   a shape worth inventing.
 - **Anything over the network.** No pricing API, no telemetry, no update check.
-  The only external processes it ever starts are local binaries — `sqlite3` to
-  read the OpenCode database, `boost` and `sqlite3` for the optional Boost
-  counterfactual. A missing `boost` degrades to a stated warning; a missing
-  `sqlite3` fails `--harness opencode` outright, because there it is the only
-  data source.
+  The only external process it ever starts is a local binary — `sqlite3`, to
+  read the OpenCode database. A missing `sqlite3` fails `--harness opencode`
+  outright, because there it is the only data source.
 
 ## Known ceilings
 
@@ -396,7 +409,7 @@ Two different things get called a dependency, and conflating them is how a
 | | |
 |---|---|
 | **Go modules** | **Zero.** Standard library only: `encoding/json`, `bufio`, `os`, `os/exec`, `text/tabwriter`, `flag`. No CLI framework, no table library, no HTTP client. |
-| **Local binaries invoked** | `sqlite3` — **required** for `--harness opencode`, which fails outright without it because it is that reader's only data source. `boost` and `sqlite3` — **optional** for `--boost-deep`, which degrades to a warning. Nothing else, ever, and never over a network. |
+| **Local binaries invoked** | `sqlite3` — **required** for `--harness opencode`, which fails outright without it because it is that reader's only data source. It is a binary tare shells out to, not a Go module compiled in. Nothing else, ever, and never over a network. |
 
 ```bash
 go list -m all | wc -l   # 1 — the module itself, nothing else
@@ -442,17 +455,15 @@ sessions against 141 transcripts still on disk: 3 gone.
 | `tare: no command given` | A subcommand is required. `tare` with no arguments prints the list. |
 | `tare: flags go after the command` | Exactly that: `tare scan --json`, not `tare --json scan`. |
 | `tare: unknown command "tool"` | Not a subcommand. `tare --help` prints the five that are. |
-| `tare: flag provided but not defined: -boost-deep` | `--boost-deep` is registered on `corruption` only, so that it cannot silently do nothing elsewhere. |
 | `tare: flag provided but not defined: -all` | `--all` and `--top` are registered on `attribute` and `corruption` only — the two commands whose tables are capped. |
 | `tare: --top needs 0 or more rows` | `--top` counts rows. `0` means every row, which is what `--all` asks for. |
 | `files 0` and an empty date range | `--dir` is not a transcript root. It should contain per-project subdirectories of `*.jsonl`. |
 | Two runs disagree | The corpus is live. Copy it and point `--dir` at the copy — see [Reproducibility](#reproducibility). |
 | Dollars read `unavailable` | That session has no `cost-state` event. Reporting the gap is deliberate; reporting `$0.00` would be a lie. |
 | `retention_gap` is non-zero | Claude Code pruned transcripts its own cache still counts. Those sessions cannot be measured at all. |
-| No Boost rows under `corruption` | `boost` or `sqlite3` is not on `PATH`. The counterfactual degrades to a warning; every other metric still runs. |
 | `tare: flag provided but not defined: -harness` | `--harness` is registered on `tools` only. The other four commands read Claude Code and nothing else. |
 | `tare: unknown --harness "…"` | The two values are `claude-code` and `opencode`. The error names both. |
-| `tare: sqlite3 is not on PATH …` | Unlike Boost, this is the OpenCode reader's only data source, so it fails instead of degrading. `sqlite3` ships with macOS. |
+| `tare: sqlite3 is not on PATH …` | The OpenCode reader has no other data source, so it fails rather than returning a partial answer. `sqlite3` ships with macOS. |
 | `tare: opencode database not readable` | `--dir` has to be the directory holding `opencode.db`, not the file itself. It defaults to `~/.local/share/opencode`. |
 | `tare: opencode query failed: the opencode.db-wal sidecar is missing` | `opencode.db` is in WAL mode and cannot be opened read-only without `-wal`. Copy all three of `.db`, `.db-wal` and `.db-shm`. Copying `.db` plus `-shm` does *not* help — `-wal` is the one that matters. |
 | `tare: opencode query failed: opencode.db-shm is absent, so sqlite3 has to create it` | The directory is not writable. Reading needs to create `-shm`; copy all three files somewhere writable, or archive `-shm` alongside the other two. |

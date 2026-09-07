@@ -284,6 +284,45 @@ func TestToolsEnvelopeContract(t *testing.T) {
 	}
 }
 
+// TestRenderToolsPluginTable pins the third table: every plugin row prints in
+// full — tools tables have no --top to hide behind, so a row that goes missing
+// is a rendering defect, not a truncation.
+func TestRenderToolsPluginTable(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"),
+		[]byte(`{"enabledPlugins":{"sre@acme":true,"notes@acme":false}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	dir := toolCorpus(t,
+		use("t1", "mcp__plugin_sre_grafana-prod__query"), result("t1", `"aaaa"`, false),
+		use("t2", "mcp__plugin_notes_obsidian__search"), result("t2", `"bb"`, true),
+		use("t3", "mcp__context7__docs"), result("t3", `"c"`, false),
+	)
+	env, err := ToolsEnvelope(dir, "test", Window{})
+	if err != nil {
+		t.Fatalf("ToolsEnvelope: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := RenderTools(&buf, env); err != nil {
+		t.Fatalf("RenderTools: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"PLUGIN", "sre", "notes"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table is missing %q — every plugin row must print in full\n%s", want, out)
+		}
+	}
+	// Tables render after MCP_SERVER, never before: the dimension order is
+	// part of what a reader parses off the artifact.
+	if strings.Index(out, "MCP_SERVER") > strings.Index(out, "PLUGIN") {
+		t.Errorf("PLUGIN table must follow MCP_SERVER\n%s", out)
+	}
+}
+
 // TestRenderToolsReadsEnvelope pins the table to the envelope, so the two can
 // never report different numbers.
 func TestRenderToolsReadsEnvelope(t *testing.T) {

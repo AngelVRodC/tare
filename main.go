@@ -19,7 +19,7 @@ import (
 // version is the build version reported by --version and in the --json
 // envelope. A var, not a const, so a release build can set it from the git tag
 // with -ldflags "-X main.version=..."; the literal is the fallback.
-var version = "0.2.0"
+var version = "0.3.0"
 
 // defaultTop is how many rows per dimension the tables print unless told
 // otherwise. It lives here rather than in internal/report because the cap is a

@@ -344,7 +344,7 @@ and not only by eye:
 ```json
 {
   "tool": "tare",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "command": "scan",
   "corpus": {
     "dir": "/Users/you/.claude/projects",

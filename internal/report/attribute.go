@@ -39,15 +39,21 @@ const thinAttribution = 50.0
 // attributionDims are the five un-redacted fields the product exists to read.
 // Anthropic's own OTel export reduces the plugin and skill names to
 // "third-party" and the MCP servers to "custom"; these carry the real names.
+//
+// field is the transcript field each one reads. It is carried so that a
+// dimension no event ever claimed can name the field that was missing, not
+// only the table that came out empty — the reader's next move depends on
+// which of the two it is.
 var attributionDims = []struct {
-	name string
-	pick func(*transcript.Event) string
+	name  string
+	field string
+	pick  func(*transcript.Event) string
 }{
-	{"attribution_skill", func(ev *transcript.Event) string { return ev.AttributionSkill }},
-	{"attribution_plugin", func(ev *transcript.Event) string { return ev.AttributionPlugin }},
-	{"attribution_agent", func(ev *transcript.Event) string { return ev.AttributionAgent }},
-	{"attribution_mcp_server", func(ev *transcript.Event) string { return ev.AttributionMcpServer }},
-	{"attribution_mcp_tool", func(ev *transcript.Event) string { return ev.AttributionMcpTool }},
+	{"attribution_skill", "attributionSkill", func(ev *transcript.Event) string { return ev.AttributionSkill }},
+	{"attribution_plugin", "attributionPlugin", func(ev *transcript.Event) string { return ev.AttributionPlugin }},
+	{"attribution_agent", "attributionAgent", func(ev *transcript.Event) string { return ev.AttributionAgent }},
+	{"attribution_mcp_server", "attributionMcpServer", func(ev *transcript.Event) string { return ev.AttributionMcpServer }},
+	{"attribution_mcp_tool", "attributionMcpTool", func(ev *transcript.Event) string { return ev.AttributionMcpTool }},
 }
 
 // dimKey is one row's identity: which table it belongs to and which row it is.
@@ -98,6 +104,10 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 	byModel := map[sessionModel]*rebill{}
 	byDim := map[dimKey]*rebill{}
 	weights := map[weightKey]float64{}
+	// claimed counts, per dimension, the responses whose field carried a value.
+	// Zero is categorically different from a low count: it means the corpus has
+	// no such field at all, so no amount of further use will fill that table.
+	claimed := map[string]int64{}
 
 	costStates := map[string]*transcript.CostState{}
 	sessions := map[string]bool{}
@@ -154,6 +164,8 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 			key := d.pick(ev)
 			if key == "" {
 				key = unattributedKey
+			} else {
+				claimed[d.name]++
 			}
 			roll(d.name, key)
 		}
@@ -238,8 +250,19 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 	// Ranged over attributionDims rather than a map: the order is fixed by
 	// declaration — the order the tables themselves print in — so the string
 	// is byte-identical run to run, which is what TestReportReproducible pins.
-	var thin []string
+	//
+	// A dimension no response ever claimed is separated out first. Both come
+	// out of the table as (unattributed), but they are different findings and
+	// they imply opposite next moves: thin attribution can improve with more
+	// use, an absent field cannot improve at all. Folding the second into
+	// "majority-unclaimed" reports a floor where there is no measurement, and
+	// naming a share for it would dress the absence up as coverage.
+	var absentField, thin []string
 	for _, d := range attributionDims {
+		if claimed[d.name] == 0 {
+			absentField = append(absentField, d.field)
+			continue
+		}
 		r := byDim[dimKey{d.name, unattributedKey}]
 		if r == nil {
 			continue
@@ -247,6 +270,10 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 		if share := percent(r.Rebilled, total.Rebilled); share > thinAttribution {
 			thin = append(thin, fmt.Sprintf("%s %.1f%%", d.name, share))
 		}
+	}
+	if len(absentField) > 0 {
+		bld.warn("%d of %d attribution dimensions are unmeasured, not unclaimed: no event in this corpus carries %s. Those tables cannot improve with further use — the Claude Code versions that wrote these transcripts never recorded the field",
+			len(absentField), len(attributionDims), strings.Join(absentField, ", "))
 	}
 	if len(thin) > 0 {
 		// The qualifier leads and the list follows. Trailing it after the names

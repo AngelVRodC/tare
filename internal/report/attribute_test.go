@@ -436,6 +436,65 @@ func TestTruncateReportsTotal(t *testing.T) {
 	}
 }
 
+// TestAbsentFieldIsNotThinAttribution separates the two reasons a table comes
+// out empty.
+//
+// Thin attribution means the field exists and most responses did not carry it,
+// so the named rows are a floor and more use can raise them. An absent field
+// means no event in the corpus carries it at all, so the table cannot improve
+// however long it runs — the Claude Code versions that wrote the transcripts
+// never recorded it. Reporting the second as the first quotes a floor where
+// there is no measurement, which is the one thing this tool exists not to do.
+//
+// Measured: on a 41-file corpus written by 7 CLI versions, `attributionSkill`
+// appears zero times and four of the five dimensions are absent this way.
+func TestAbsentFieldIsNotThinAttribution(t *testing.T) {
+	const model = "claude-opus-5"
+	allFive := map[string]string{
+		"attributionSkill":     "alpha",
+		"attributionPlugin":    "desplega",
+		"attributionAgent":     "phase-running",
+		"attributionMcpServer": "context7",
+		"attributionMcpTool":   "query-docs",
+	}
+
+	t.Run("absent", func(t *testing.T) {
+		env := attributeCorpus(t,
+			usageLine(t, "s1", "msg_1", model, tokens{in: 10, read: 10_000}, nil),
+		)
+		joined := strings.Join(env.Warnings, "\n")
+		for _, want := range []string{
+			"unmeasured, not unclaimed", "5 of 5",
+			"attributionSkill", "attributionMcpTool", "cannot improve",
+		} {
+			if !strings.Contains(joined, want) {
+				t.Errorf("warnings do not say %q: %v", want, env.Warnings)
+			}
+		}
+		// Naming a share for an absent field would dress the absence up as
+		// coverage, so the majority-unclaimed line must stay quiet here.
+		if strings.Contains(joined, "are (unattributed)") {
+			t.Errorf("majority-unclaimed fired for an absent field: %v", env.Warnings)
+		}
+	})
+
+	// The false-positive gate: one claimed response makes the field present,
+	// and from there thinness is the correct finding.
+	t.Run("present but thin", func(t *testing.T) {
+		env := attributeCorpus(t,
+			usageLine(t, "s1", "msg_1", model, tokens{in: 10, read: 1_000}, allFive),
+			usageLine(t, "s1", "msg_2", model, tokens{in: 10, read: 9_000}, nil),
+		)
+		joined := strings.Join(env.Warnings, "\n")
+		if !strings.Contains(joined, "are (unattributed)") {
+			t.Errorf("a present-but-thin dimension must still warn: %v", env.Warnings)
+		}
+		if strings.Contains(joined, "unmeasured, not unclaimed") {
+			t.Errorf("absent-field warning fired for a present field: %v", env.Warnings)
+		}
+	})
+}
+
 // TestUnattributedWarnsAboveThreshold pins the confidence bound. Re-billed
 // tokens are cache reads and nothing else, so `read` alone sets each share.
 //

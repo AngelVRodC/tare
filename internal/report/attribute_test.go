@@ -213,7 +213,9 @@ func TestWeightsMatchBilling(t *testing.T) {
 
 // TestAllocationConserves pins the property that makes the estimate safe: a
 // wrong ratio moves dollars between rows and never changes the total, because
-// the total is the measured bill.
+// the total is the measured bill. Money is integer microdollars, so each row
+// rounds to the nearest micro; the summed rows may drift from the rounded bill
+// by up to one micro per row, never more.
 func TestAllocationConserves(t *testing.T) {
 	const model = "claude-opus-5"
 	const bill = 12.34
@@ -232,24 +234,24 @@ func TestAllocationConserves(t *testing.T) {
 		costLine(t, "s1", bill, map[string]transcript.ModelUsage{model: total}),
 	)
 
-	var sum float64
-	var rows int
+	billed := int64(math.Round(bill * 1e6))
+	var sum, rows int64
 	for _, m := range env.Metrics {
 		if m.Name == "cost_usd" && m.Dimension == "attribution_skill" {
-			sum += m.Value.(float64)
+			sum += m.Value.(int64)
 			rows++
 		}
 	}
 	if rows != 2 {
 		t.Fatalf("allocated across %d skill rows, want 2", rows)
 	}
-	if math.Abs(sum-bill) > 1e-9 {
-		t.Errorf("allocated %.12f, want the measured bill %.12f", sum, bill)
+	if drift := sum - billed; drift < -rows || drift > rows {
+		t.Errorf("allocated %d micro, want the measured bill %d micro within %d (per-row rounding)", sum, billed, rows)
 	}
 	// The split has to be a split, not the bill twice.
-	alpha := mustMetric(t, env, "cost_usd", "attribution_skill", "alpha").Value.(float64)
-	if alpha <= 0 || alpha >= bill {
-		t.Errorf("alpha allocated %v, want a share strictly inside (0, %v)", alpha, bill)
+	alpha := mustMetric(t, env, "cost_usd", "attribution_skill", "alpha").Value.(int64)
+	if alpha <= 0 || alpha >= billed {
+		t.Errorf("alpha allocated %v, want a share strictly inside (0, %v)", alpha, billed)
 	}
 }
 
@@ -272,7 +274,7 @@ func TestNoMeasuredDollars(t *testing.T) {
 
 	var dollarRows int
 	for i, m := range env.Metrics {
-		if m.Unit != "usd" {
+		if m.Unit != "microdollars" {
 			continue
 		}
 		dollarRows++
@@ -289,6 +291,56 @@ func TestNoMeasuredDollars(t *testing.T) {
 	if got := mustMetric(t, env, "cost_usd", "attribution_plugin", "desplega"); got.Method == nil ||
 		*got.Method != AllocationMethod {
 		t.Errorf("allocated row names method %v, want %q", got.Method, AllocationMethod)
+	}
+}
+
+// TestMoneyRowsAreIntegerMicrodollars pins the wire shape of money
+// (microdollar-cost-1): every money row carries an integer value under the
+// `microdollars` unit, and where coverage is complete the identity
+// allocated + unallocated = billed holds in integers (microdollar-cost-2).
+func TestMoneyRowsAreIntegerMicrodollars(t *testing.T) {
+	const model = "claude-opus-5"
+	const bill = 12.34
+	env := attributeCorpus(t,
+		usageLine(t, "s1", "msg_1", model,
+			tokens{in: 900, out: 40, read: 120_000, c5m: 3_000},
+			map[string]string{"attributionSkill": "alpha"}),
+		usageLine(t, "s1", "msg_2", model,
+			tokens{in: 12, out: 4_400, read: 8_000, c1h: 50_000},
+			map[string]string{"attributionSkill": "beta"}),
+		costLine(t, "s1", bill, map[string]transcript.ModelUsage{model: {
+			Input: 912, Output: 4_440, CacheRead: 128_000, CacheCreate: 53_000, CostUSD: bill,
+		}}),
+	)
+
+	money := map[string]bool{
+		"cost_usd": true, "allocated_cost_usd": true, "unallocated_cost_usd": true,
+	}
+	var moneyRows int
+	for _, m := range env.Metrics {
+		if !money[m.Name] {
+			continue
+		}
+		moneyRows++
+		if m.Unit != "microdollars" {
+			t.Errorf("money row %s/%s carries unit %q, want microdollars", m.Name, m.Key, m.Unit)
+		}
+		if _, ok := m.Value.(int64); !ok {
+			t.Errorf("money row %s/%s value %v is %T, want int64", m.Name, m.Key, m.Value, m.Value)
+		}
+	}
+	if moneyRows == 0 {
+		t.Fatal("no money rows emitted — the contract was not exercised")
+	}
+
+	// Coverage is complete here (the fixture bills exactly what the transcript
+	// records), so nothing is unallocated for lack of events and the two
+	// corpus rows must sum to the measured bill in whole microdollars.
+	billed := int64(math.Round(bill * 1e6))
+	alloc := mustMetric(t, env, "allocated_cost_usd", "corpus", "").Value.(int64)
+	unalloc := mustMetric(t, env, "unallocated_cost_usd", "corpus", "").Value.(int64)
+	if alloc+unalloc != billed {
+		t.Errorf("allocated (%d) + unallocated (%d) = %d, want billed %d", alloc, unalloc, alloc+unalloc, billed)
 	}
 }
 

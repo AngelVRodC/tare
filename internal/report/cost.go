@@ -1,6 +1,10 @@
 package report
 
-import "github.com/AngelVRodC/tare/internal/transcript"
+import (
+	"math"
+
+	"github.com/AngelVRodC/tare/internal/transcript"
+)
 
 // AllocationMethod names how a dollar figure was arrived at. Every estimated
 // row carries it; no dollar row is ever tagged measured.
@@ -44,19 +48,22 @@ type sessionModel struct {
 	model   string
 }
 
-// allocate splits a measured session-model bill across a share of its weight.
+// allocate splits a measured session-model bill across a share of its weight,
+// returned in integer microdollars — the unit every money row carries.
 //
-// Summed over every share of the same session-model, this returns the bill
-// exactly, which is the whole point: a wrong weight ratio moves dollars
-// between rows and never changes the total. The result is always estimated —
-// no dollar figure is ever measured, not even for a single-tool turn, because
-// the charge includes the re-sent prefix and the output tokens and neither
-// belongs to any one tool.
-func allocate(costUSD, share, total float64) float64 {
+// The rounding boundary sits here, once (microdollar-cost-2): each row is the
+// nearest micro to its exact share, so a set of rows summed back can drift
+// from the bill by up to one micro per row. That drift is bounded and ordered,
+// so integer sums stay associative and two runs over one corpus are
+// byte-identical — the property float money could only hold by sorting first.
+// The result is always estimated — no dollar figure is ever measured, not even
+// for a single-tool turn, because the charge includes the re-sent prefix and
+// the output tokens and neither belongs to any one tool.
+func allocate(costUSD, share, total float64) int64 {
 	if total <= 0 {
 		return 0
 	}
-	return costUSD * share / total
+	return int64(math.Round(costUSD * share / total * 1e6))
 }
 
 // coverage is transcript tokens over cost-state tokens for one session-model.

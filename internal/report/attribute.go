@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -183,7 +184,7 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 	// Every dimension allocates the same bills, so any one of them totals the
 	// allocation. What it does not reach is the gap coverage just measured:
 	// models billed with no transcript events to allocate across.
-	var allocated float64
+	var allocated int64
 	for _, dk := range slices.SortedFunc(maps.Keys(costByDim), compareDimKey) {
 		if dk.dimension == sessionDim {
 			allocated += costByDim[dk]
@@ -209,8 +210,8 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 	add("attachment_share_percent", percent(attachTotal.Bytes, scanStats.Bytes), "percent")
 	add("attachment_types", int64(len(attachByType)), "types")
 	bld.rows(
-		EstimatedMetric("allocated_cost_usd", "corpus", "", allocated, "usd", AllocationMethod),
-		EstimatedMetric("unallocated_cost_usd", "corpus", "", billed-allocated, "usd", AllocationMethod))
+		EstimatedMetric("allocated_cost_usd", "corpus", "", allocated, "microdollars", AllocationMethod),
+		EstimatedMetric("unallocated_cost_usd", "corpus", "", billed-allocated, "microdollars", AllocationMethod))
 
 	for _, d := range attributionDims {
 		bld.rows(rebillMetrics(d.name, byDim, costByDim)...)
@@ -288,14 +289,13 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 // rows that earned it, in proportion to weighted tokens. A session-model with
 // no bill contributes nothing — never a zero.
 func allocateDims(weights map[weightKey]float64, byModel map[sessionModel]*rebill,
-	costStates map[string]*transcript.CostState) map[dimKey]float64 {
+	costStates map[string]*transcript.CostState) map[dimKey]int64 {
 
-	out := map[dimKey]float64{}
-	// Sorted, not ranged: Go randomises map iteration and float addition is
-	// not associative, so an unordered sum lands on a different last bit each
-	// run. That is enough to make two `tare report --json` runs over an
-	// unchanged corpus differ — the one thing the artifact promises they will
-	// not do.
+	out := map[dimKey]int64{}
+	// Sorted, not ranged: an unordered sum once made two `tare report --json`
+	// runs differ in the last bit of every dollar figure. Integer addition is
+	// associative, so the order no longer moves the total — but the sorted
+	// walk costs nothing and keeps the property from depending on that.
 	for _, wk := range slices.SortedFunc(maps.Keys(weights), compareWeightKey) {
 		w := weights[wk]
 		cs := costStates[wk.session]
@@ -337,13 +337,13 @@ func compareDimKey(a, b dimKey) int {
 // every other finding, and the per-session detail is already carried by the
 // coverage_ratio rows.
 func coverageMetrics(costStates map[string]*transcript.CostState,
-	byModel map[sessionModel]*rebill) (rows []Metric, billed float64, absent string) {
+	byModel map[sessionModel]*rebill) (rows []Metric, billed int64, absent string) {
 
 	absentPairs := 0
 	absentModels := map[string]bool{}
 	for _, session := range slices.Sorted(maps.Keys(costStates)) {
 		cs := costStates[session]
-		billed += cs.TotalCostUSD
+		billed += int64(math.Round(cs.TotalCostUSD * 1e6))
 		for _, model := range slices.Sorted(maps.Keys(cs.ModelUsage)) {
 			mu := cs.ModelUsage[model]
 			key := session + "/" + model
@@ -371,7 +371,7 @@ func coverageMetrics(costStates map[string]*transcript.CostState,
 }
 
 // rebillMetrics emits one dimension's rows, heaviest re-billing first.
-func rebillMetrics(dimension string, byDim map[dimKey]*rebill, cost map[dimKey]float64) []Metric {
+func rebillMetrics(dimension string, byDim map[dimKey]*rebill, cost map[dimKey]int64) []Metric {
 	keys := dimensionKeys(byDim, dimension, func(a, b *rebill) int {
 		return cmp.Compare(b.Rebilled, a.Rebilled)
 	})
@@ -386,8 +386,8 @@ func rebillMetrics(dimension string, byDim map[dimKey]*rebill, cost map[dimKey]f
 			MeasuredMetric("rebill_multiplier", dimension, k, r.Multiplier(), "ratio"))
 		// No bill reached this row, so it has no cost_usd row at all. The
 		// absence is the report: unavailable is not zero.
-		if usd, billed := cost[dk]; billed {
-			out = append(out, EstimatedMetric("cost_usd", dimension, k, usd, "usd", AllocationMethod))
+		if micro, billed := cost[dk]; billed {
+			out = append(out, EstimatedMetric("cost_usd", dimension, k, micro, "microdollars", AllocationMethod))
 		}
 	}
 	return out

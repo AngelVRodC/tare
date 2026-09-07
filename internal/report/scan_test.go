@@ -58,6 +58,29 @@ func TestFormatValueByUnit(t *testing.T) {
 	}
 }
 
+// TestFormatValueMicrodollars pins the money rendering: an integer count of
+// microdollars renders through formatUSD as the dollar amount it is. The int
+// case is accepted alongside int64, per the bytes-case precedent.
+func TestFormatValueMicrodollars(t *testing.T) {
+	cases := []struct {
+		value any
+		want  string
+	}{
+		{int64(1234567), formatUSD(1.234567)},
+		// Sub-cent allocations are the point of the per-skill table: they
+		// render exactly, never rounded away to $0.00.
+		{int64(149), formatUSD(0.000149)},
+		{int64(0), "$0.00"},
+		{int64(-1234567), formatUSD(-1.234567)},
+		{1234567, formatUSD(1.234567)},
+	}
+	for _, c := range cases {
+		if got := formatValue(c.value, "microdollars"); got != c.want {
+			t.Errorf("formatValue(%v, %q) = %q, want %q", c.value, "microdollars", got, c.want)
+		}
+	}
+}
+
 // TestHumanizeBytesIsSI is the guard against the most common humanization bug
 // there is: dividing by 1024 and labelling the result MB. tare measures bytes
 // on disk, so it divides by 1000 and the two systems are never mixed.

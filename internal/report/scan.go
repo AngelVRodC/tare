@@ -322,7 +322,19 @@ func formatValue(v any, unit string) string {
 		if n, ok := v.(float64); ok {
 			return strconv.FormatFloat(n, 'f', 1, 64) + "%"
 		}
+	case "microdollars":
+		// Money is an integer count of microdollars (microdollar-cost-3);
+		// int is accepted beside int64, per the bytes-case precedent.
+		switch n := v.(type) {
+		case int:
+			return formatUSD(float64(n) / 1e6)
+		case int64:
+			return formatUSD(float64(n) / 1e6)
+		}
 	case "usd":
+		// Zero call sites remain — every money row is microdollars now — but
+		// dropping this case would send a stray float money value to the 'g'
+		// fallback and mis-render it silently.
 		if n, ok := v.(float64); ok {
 			return formatUSD(n)
 		}

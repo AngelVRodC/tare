@@ -504,8 +504,10 @@ absolute one does not.
 npx skills add AngelVRodC/tare --skill tare
 ```
 
-This resolves the tracked `.agents/skills/tare` tree and links it for the
-harnesses it detects.
+This resolves the tracked `.agents/skills/tare` tree and installs a copy of
+it into `.claude/skills/` for the harnesses it detects — a copy, not a
+symlink, so it does not follow this repository's future updates; re-run the
+command after upgrading.
 
 ### Version drift
 

@@ -92,28 +92,28 @@ func TestEnvelopeSchemaVersionOrderAndValue(t *testing.T) {
 	// miss at another.
 	corpus := fixtureCorpus(t)
 	envs := map[string]Envelope{}
-	if env, err := ScanEnvelope(corpus, "test"); err != nil {
+	if env, err := ScanEnvelope(corpus, "test", Window{}); err != nil {
 		t.Fatalf("ScanEnvelope: %v", err)
 	} else {
 		envs["ScanEnvelope"] = env
 	}
-	if env, err := ToolsEnvelope(corpus, "test"); err != nil {
+	if env, err := ToolsEnvelope(corpus, "test", Window{}); err != nil {
 		t.Fatalf("ToolsEnvelope: %v", err)
 	} else {
 		envs["ToolsEnvelope"] = env
 	}
-	if env, err := AttributeEnvelope(corpus, "test"); err != nil {
+	if env, err := AttributeEnvelope(corpus, "test", Window{}); err != nil {
 		t.Fatalf("AttributeEnvelope: %v", err)
 	} else {
 		envs["AttributeEnvelope"] = env
 	}
-	if env, err := CorruptionEnvelope(corpus, "test"); err != nil {
+	if env, err := CorruptionEnvelope(corpus, "test", Window{}); err != nil {
 		t.Fatalf("CorruptionEnvelope: %v", err)
 	} else {
 		envs["CorruptionEnvelope"] = env
 	}
-	envs["openCodeEnvelope"] = openCodeEnvelope(corpus, "test", nil, openCodeSpan{}, nil, nil, 0)
-	if r, err := BuildReport(corpus, "test", nil); err != nil {
+	envs["openCodeEnvelope"] = openCodeEnvelope(corpus, "test", nil, openCodeSpan{}, nil, nil, 0, Window{})
+	if r, err := BuildReport(corpus, "test", Window{}, nil); err != nil {
 		t.Fatalf("BuildReport: %v", err)
 	} else {
 		envs["merge (BuildReport)"] = r.Envelope
@@ -141,7 +141,7 @@ func TestEnvelopeSchemaVersionOrderAndValue(t *testing.T) {
 // TestEnvelopeDerivation is the phase gate: every row of every `--json`
 // envelope carries a derivation, and an estimated row names its method.
 func TestEnvelopeDerivation(t *testing.T) {
-	env, err := ScanEnvelope(fixtureCorpus(t), "test")
+	env, err := ScanEnvelope(fixtureCorpus(t), "test", Window{})
 	if err != nil {
 		t.Fatalf("ScanEnvelope: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestValidateRejects(t *testing.T) {
 // TestScanEnvelopeCounts checks the inventory arithmetic against a fixture
 // whose every number is known by hand.
 func TestScanEnvelopeCounts(t *testing.T) {
-	env, err := ScanEnvelope(fixtureCorpus(t), "test")
+	env, err := ScanEnvelope(fixtureCorpus(t), "test", Window{})
 	if err != nil {
 		t.Fatalf("ScanEnvelope: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestNonTranscriptRowsRenderAndVanishWhenClean(t *testing.T) {
 			"proj/sess/subagents/workflows/wf_x/journal.jsonl": `{"type":"started","key":"v2:a","agentId":"a1"}` + "\n" +
 				`{"type":"result","key":"v2:a","agentId":"a1"}` + "\n",
 		})
-		env, err := ScanEnvelope(dir, "test")
+		env, err := ScanEnvelope(dir, "test", Window{})
 		if err != nil {
 			t.Fatalf("ScanEnvelope: %v", err)
 		}
@@ -306,7 +306,7 @@ func TestNonTranscriptRowsRenderAndVanishWhenClean(t *testing.T) {
 	})
 
 	t.Run("clean corpus omits the rows", func(t *testing.T) {
-		env, err := ScanEnvelope(corpus(t, map[string]string{"proj/sess.jsonl": txLine}), "test")
+		env, err := ScanEnvelope(corpus(t, map[string]string{"proj/sess.jsonl": txLine}), "test", Window{})
 		if err != nil {
 			t.Fatalf("ScanEnvelope: %v", err)
 		}
@@ -322,7 +322,7 @@ func TestNonTranscriptRowsRenderAndVanishWhenClean(t *testing.T) {
 }
 
 func TestRenderScanReadsEnvelope(t *testing.T) {
-	env, err := ScanEnvelope(fixtureCorpus(t), "test")
+	env, err := ScanEnvelope(fixtureCorpus(t), "test", Window{})
 	if err != nil {
 		t.Fatalf("ScanEnvelope: %v", err)
 	}

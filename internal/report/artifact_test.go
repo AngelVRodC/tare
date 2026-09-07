@@ -68,7 +68,7 @@ func TestReportReproducible(t *testing.T) {
 
 	var first []byte
 	for run := range 8 {
-		rep, err := BuildReport(dir, "test", nil)
+		rep, err := BuildReport(dir, "test", Window{}, nil)
 		if err != nil {
 			t.Fatalf("BuildReport: %v", err)
 		}
@@ -84,13 +84,44 @@ func TestReportReproducible(t *testing.T) {
 			t.Fatalf("run %d produced different JSON over an unchanged corpus", run)
 		}
 	}
+
+	// The same claim under a window (microdollar-cost-2): a window changes
+	// which events are summed, never their order, so eight windowed runs over
+	// the same corpus must be byte-identical too. The window brackets the
+	// fixture's 2026-09-01 timestamps, so the matched-window path is what
+	// runs — the interesting one, where windowed rows are emitted at all.
+	w, err := NewWindow("2026-09-01", "2026-09-02")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first = nil
+	for run := range 8 {
+		rep, err := BuildReport(dir, "test", w, nil)
+		if err != nil {
+			t.Fatalf("BuildReport windowed: %v", err)
+		}
+		var buf bytes.Buffer
+		if err := WriteJSON(&buf, rep.Envelope); err != nil {
+			t.Fatalf("WriteJSON: %v", err)
+		}
+		if run == 0 {
+			first = bytes.Clone(buf.Bytes())
+			continue
+		}
+		if !bytes.Equal(first, buf.Bytes()) {
+			t.Fatalf("windowed run %d produced different JSON over an unchanged corpus", run)
+		}
+	}
+	if !w.Active() {
+		t.Fatal("test bug: the windowed reproducibility loop ran unwindowed")
+	}
 }
 
 // TestReportMarkdownVariesOnlyByTimestamp is the same claim for the human half:
 // two renders of one report differ in the generated line and nowhere else.
 func TestReportMarkdownVariesOnlyByTimestamp(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	rep, err := BuildReport(reportCorpus(t), "test", nil)
+	rep, err := BuildReport(reportCorpus(t), "test", Window{}, nil)
 	if err != nil {
 		t.Fatalf("BuildReport: %v", err)
 	}
@@ -180,7 +211,7 @@ func TestBuildReportSilentWhenProgressNil(t *testing.T) {
 	os.Stdout, os.Stderr = stdout, stderr
 	t.Cleanup(func() { os.Stdout, os.Stderr = saved, savedErr })
 
-	if _, err := BuildReport(dir, "test", nil); err != nil {
+	if _, err := BuildReport(dir, "test", Window{}, nil); err != nil {
 		t.Fatalf("BuildReport: %v", err)
 	}
 	for _, f := range []*os.File{stdout, stderr} {
@@ -203,7 +234,7 @@ func TestBuildReportWritesProgress(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	var progress bytes.Buffer
-	if _, err := BuildReport(reportCorpus(t), "test", &progress); err != nil {
+	if _, err := BuildReport(reportCorpus(t), "test", Window{}, &progress); err != nil {
 		t.Fatalf("BuildReport: %v", err)
 	}
 	if got := progress.String(); got != "scanning…\ntools…\nattribute…\ncorruption…\n" {
@@ -217,7 +248,7 @@ func TestBuildReportWritesProgress(t *testing.T) {
 func TestReportHeaderIsSelfContained(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	dir := reportCorpus(t)
-	rep, err := BuildReport(dir, "test", nil)
+	rep, err := BuildReport(dir, "test", Window{}, nil)
 	if err != nil {
 		t.Fatalf("BuildReport: %v", err)
 	}

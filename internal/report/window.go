@@ -3,6 +3,7 @@ package report
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // Window is the --since/--until time window a run measures within. The zero
@@ -112,6 +113,35 @@ func (w Window) Until() string { return w.until }
 // UntilBare reports whether --until was a bare date, which windows by whole
 // days rather than by instant.
 func (w Window) UntilBare() bool { return w.untilBare }
+
+// windowC1Warning is the one observational warning every windowed envelope
+// carries (time-window-9). It names the four things a reader needs before
+// trusting a windowed figure: what the window means (a), what stayed
+// corpus-wide (b), which measured event types carry no timestamp and are
+// therefore excluded rather than zeroed (c), and that cost joins the window
+// at session granularity (d). Enforcement is render tests, not
+// Envelope.Validate — no window field is added to Validate.
+//
+// untimestamped arrives from untimestampedTypes, already sorted, so the
+// string is byte-identical run to run and TestReportReproducible holds.
+func windowC1Warning(w Window, untimestamped []string) string {
+	bound := "timestamp <= " + w.Until()
+	if w.Since() != "" {
+		bound = "timestamp >= " + w.Since()
+		if w.Until() != "" {
+			bound += " <= " + w.Until()
+		}
+	}
+	untimestampedNote := "every measured event type carries a timestamp"
+	if len(untimestamped) > 0 {
+		untimestampedNote = "event types carrying no timestamp are excluded from windowed counts " +
+			"and reported unavailable, not zero: " + strings.Join(untimestamped, ", ")
+	}
+	return "this run measures only events with " + bound + " — a lexical subset of the corpus; " +
+		"corpus totals (files, bytes, parse errors) and join-integrity counters (unmatched_results) " +
+		"remain whole-corpus; " + untimestampedNote +
+		"; cost is session-granular — a session whose startTime falls inside the window is billed wholly to it"
+}
 
 // msPart extracts the milliseconds digits of a full-precision bound. The
 // OpenCode adapter composes `time_created <= strftime(...)*1000 + <ms>` from

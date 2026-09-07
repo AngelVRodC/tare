@@ -22,7 +22,7 @@ func TestTruncationMarkers(t *testing.T) {
 		use("t4", "WebFetch"), result("t4", `"<response clipped>"`, false),
 		use("t5", "Read"), result("t5", `"a file that merely discusses truncation as a topic"`, false),
 	)
-	env, err := CorruptionEnvelope(dir, "test")
+	env, err := CorruptionEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("CorruptionEnvelope: %v", err)
 	}
@@ -55,7 +55,13 @@ func TestTruncationMarkers(t *testing.T) {
 // calls: present on 110 events, every one carrying an is_error result and
 // never a clean one. Values seen — permission-rule (68), user-rejected (42).
 func resultDenied(id, content, kind string) string {
-	return `{"type":"user","sessionId":"s1","timestamp":"2026-09-01T10:00:01.000Z",` +
+	return resultDeniedAt("2026-09-01T10:00:01.000Z", id, content, kind)
+}
+
+// resultDeniedAt is resultDenied with the event timestamp spelled out, which
+// is what a window test has to vary.
+func resultDeniedAt(ts, id, content, kind string) string {
+	return `{"type":"user","sessionId":"s1","timestamp":"` + ts + `",` +
 		`"toolDenialKind":"` + kind + `",` +
 		`"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id +
 		`","content":` + content + `,"is_error":true}]}}`
@@ -92,7 +98,7 @@ func TestAmbiguousDenialIsAnUpperBound(t *testing.T) {
 			resultPairDenied("t1", "t2", "permission-rule"),
 			use("t3", "Read"), resultDenied("t3", `"blocked"`, "user-rejected"),
 		)
-		env, err := CorruptionEnvelope(dir, "test")
+		env, err := CorruptionEnvelope(dir, "test", Window{})
 		if err != nil {
 			t.Fatalf("CorruptionEnvelope: %v", err)
 		}
@@ -136,7 +142,7 @@ func TestAmbiguousDenialIsAnUpperBound(t *testing.T) {
 			use("t1", "Bash"), resultDenied("t1", `"blocked"`, "permission-rule"),
 			use("t2", "Bash"), result("t2", `"Exit code 1"`, true),
 		)
-		env, err := CorruptionEnvelope(dir, "test")
+		env, err := CorruptionEnvelope(dir, "test", Window{})
 		if err != nil {
 			t.Fatalf("CorruptionEnvelope: %v", err)
 		}
@@ -159,7 +165,7 @@ func TestRankingSortsFailuresBeforeErrors(t *testing.T) {
 		use("r3", "Read"), resultDenied("r3", `"blocked"`, "user-rejected"),
 		use("b1", "Bash"), result("b1", `"Exit code 1"`, true),
 	)
-	env, err := CorruptionEnvelope(dir, "test")
+	env, err := CorruptionEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("CorruptionEnvelope: %v", err)
 	}
@@ -195,7 +201,7 @@ func TestDenialIsNotAFailure(t *testing.T) {
 		use("t4", "Read"), resultDenied("t4", `"The user doesn't want to proceed with this tool use"`, "user-rejected"),
 		use("t5", "Grep"), result("t5", `"clean"`, false),
 	)
-	env, err := CorruptionEnvelope(dir, "test")
+	env, err := CorruptionEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("CorruptionEnvelope: %v", err)
 	}
@@ -242,7 +248,7 @@ func TestErrorAndEmptyRates(t *testing.T) {
 		use("t3", "Bash"), result("t3", `""`, false),
 		use("t4", "Bash"), ext,
 	)
-	env, err := CorruptionEnvelope(dir, "test")
+	env, err := CorruptionEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("CorruptionEnvelope: %v", err)
 	}
@@ -265,7 +271,7 @@ func TestErrorAndEmptyRates(t *testing.T) {
 func TestCorruptionEnvelopeContract(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // keep the shell-outs out of a contract test
 	dir := toolCorpus(t, use("t1", "Bash"), result("t1", `"hi"`, false))
-	env, err := CorruptionEnvelope(dir, "test")
+	env, err := CorruptionEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("CorruptionEnvelope: %v", err)
 	}
@@ -297,7 +303,7 @@ func TestRenderCorruptionReadsEnvelope(t *testing.T) {
 		use("t1", "Bash"), result("t1", `"boom [truncated]"`, true),
 		use("t2", "Read"), result("t2", `"fine"`, false),
 	)
-	env, err := CorruptionEnvelope(dir, "test")
+	env, err := CorruptionEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("CorruptionEnvelope: %v", err)
 	}
@@ -313,5 +319,65 @@ func TestRenderCorruptionReadsEnvelope(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("table is missing %q\n%s", want, out)
 		}
+	}
+}
+
+// TestCorruptionKeyedStatsWindowed is time-window-6 for the corruption
+// command: the join map is built corpus-wide, per-key stats (tool,
+// denial_kind, truncation_marker) aggregate only in-window results, and the
+// unmatched counter stays whole-corpus so the join's integrity audit cannot
+// be deflated by a window cut.
+func TestCorruptionKeyedStatsWindowed(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // hermetic: this gate is transcript-only
+	dir := toolCorpus(t,
+		useAt("2026-08-15T10:00:00.000Z", "t1", "Bash"), // in-window denial
+		resultDeniedAt("2026-08-15T10:00:01.000Z", "t1", `"blocked"`, "user-rejected"),
+		useAt("2026-08-15T11:00:00.000Z", "t2", "Read"), // in-window use...
+		// ...whose truncated result lies outside the window.
+		resultAt("2026-08-20T10:00:00.000Z", "t2", `"[truncated]"`, false),
+		useAt("2026-08-01T10:00:00.000Z", "t3", "Bash"), // out-of-window denial
+		resultDeniedAt("2026-08-01T10:00:01.000Z", "t3", `"blocked"`, "permission-rule"),
+		resultAt("2026-08-20T11:00:00.000Z", "ghost", `"orphaned"`, false), // out-of-window, unmatched
+	)
+	w, err := NewWindow("2026-08-14", "2026-08-16")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := CorruptionEnvelope(dir, "test", w)
+	if err != nil {
+		t.Fatalf("CorruptionEnvelope: %v", err)
+	}
+
+	// The in-window denial is attributed to its tool and its kind.
+	if got := metricValue(t, env, "denied", "tool", "Bash"); got != int64(1) {
+		t.Errorf("denied/tool/Bash = %v, want 1", got)
+	}
+	if got := metricValue(t, env, "denied", "denial_kind", "user-rejected"); got != int64(1) {
+		t.Errorf("denied/denial_kind/user-rejected = %v, want 1", got)
+	}
+	// t3's denial is out of window: the kind is absent, not zero.
+	if got := metricOrNil(env, "denied", "denial_kind", "permission-rule"); got != nil {
+		t.Errorf("denied/denial_kind/permission-rule = %v emitted — that denial is out of window", got)
+	}
+	// Read's result is out of window: its truncation is absent, not zero.
+	if got := metricOrNil(env, "truncated_results", "tool", "Read"); got != nil {
+		t.Errorf("truncated_results/tool/Read = %v emitted — that result is out of window", got)
+	}
+	if got := metricOrNil(env, "truncated_results", "truncation_marker", "[truncated]"); got != nil {
+		t.Errorf("marker [truncated] = %v emitted — that result is out of window", got)
+	}
+	// Only Bash was rolled up: Read never produced an in-window result.
+	if got := metricValue(t, env, "distinct_tools", "corpus", ""); got != int64(1) {
+		t.Errorf("distinct_tools = %v, want 1 — only tools with in-window results are rolled up", got)
+	}
+	// The unmatched counter is whole-corpus: the ghost result is out of
+	// window but still audited.
+	if got := metricValue(t, env, "unmatched_results", "corpus", ""); got != int64(1) {
+		t.Errorf("unmatched_results = %v, want 1 — join-integrity counters stay corpus-wide", got)
+	}
+	// The denial warning is defect detection: it still fires from the
+	// windowed totals it describes.
+	if !strings.Contains(strings.Join(env.Warnings, "\n"), "policy denials") {
+		t.Errorf("warnings = %v, want the denial warning to still fire", env.Warnings)
 	}
 }

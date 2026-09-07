@@ -98,7 +98,12 @@ func bucket[K comparable, V any](m map[K]*V, k K) *V {
 // all as an explicit estimate.
 //
 // One streaming pass. Only counters are retained — never a line of content.
-func AttributeEnvelope(dir, version string) (Envelope, error) {
+//
+// Under a window, the gate is generic (time-window-3): every event the window
+// cannot place returns before any accumulator sees it. The cost-state record's
+// own startTime join is a later change — until it lands, cost-states gate on
+// the event timestamp like everything else.
+func AttributeEnvelope(dir, version string, w Window) (Envelope, error) {
 	usage := transcript.NewUsageSet()
 
 	var total rebill
@@ -118,10 +123,13 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 	attachByKey := map[dimKey]*attachStat{}
 
 	var naiveResponses int64
-	bld := newBuilder(dir, version, "attribute")
+	bld := newBuilder(dir, version, "attribute", w)
 
 	scanStats, err := transcript.Scan(dir, func(ev *transcript.Event) {
-		bld.seeTime(ev.Timestamp)
+		bld.seeTime(ev.Timestamp, ev.Type)
+		if w.Active() && !w.Includes(ev.Timestamp) {
+			return
+		}
 		if ev.SessionID != "" {
 			sessions[ev.SessionID] = true
 		}
@@ -191,27 +199,38 @@ func AttributeEnvelope(dir, version string) (Envelope, error) {
 		}
 	}
 
-	add := bld.add
-	add("responses_naive", naiveResponses, "responses")
-	add("responses_distinct", int64(usage.Distinct), "responses")
-	add("responses_duplicate", int64(usage.Duplicates), "responses")
-	add("duplicate_rate_percent", percent(int64(usage.Duplicates), naiveResponses), "percent")
-	add("fresh_tokens", total.Fresh, "tokens")
-	add("rebilled_tokens", total.Rebilled, "tokens")
-	add("output_tokens", total.Output, "tokens")
-	add("thinking_tokens", total.Thinking, "tokens")
-	add("rebill_multiplier", total.Multiplier(), "ratio")
-	add("sessions", int64(len(sessions)), "sessions")
-	add("sessions_with_cost_state", int64(len(costStates)), "sessions")
-	add("sessions_without_cost_state", int64(len(sessions)-len(costStates)), "sessions")
-	add("cost_state_coverage_percent", percent(int64(len(costStates)), int64(len(sessions))), "percent")
-	add("attachment_events", attachTotal.Events, "events")
-	add("attachment_bytes", attachTotal.Bytes, "bytes")
-	add("attachment_share_percent", percent(attachTotal.Bytes, scanStats.Bytes), "percent")
-	add("attachment_types", int64(len(attachByType)), "types")
-	bld.rows(
-		EstimatedMetric("allocated_cost_usd", "corpus", "", allocated, "microdollars", AllocationMethod),
-		EstimatedMetric("unallocated_cost_usd", "corpus", "", billed-allocated, "microdollars", AllocationMethod))
+	// Every keyless row here is a windowed count: the callback gate above
+	// decides what these counters ever saw, so a window that matched no
+	// events omits them (time-window-8) — a measured zero the window emptied
+	// is an over-claim Validate cannot catch. attribute has no corpus-wide
+	// keyless row to keep rendering: files, bytes and parse errors belong to
+	// scan. The estimated money pair below rides the same omit path.
+	addWin := bld.addWin
+	addWin("responses_naive", naiveResponses, "responses")
+	addWin("responses_distinct", int64(usage.Distinct), "responses")
+	addWin("responses_duplicate", int64(usage.Duplicates), "responses")
+	addWin("duplicate_rate_percent", percent(int64(usage.Duplicates), naiveResponses), "percent")
+	addWin("fresh_tokens", total.Fresh, "tokens")
+	addWin("rebilled_tokens", total.Rebilled, "tokens")
+	addWin("output_tokens", total.Output, "tokens")
+	addWin("thinking_tokens", total.Thinking, "tokens")
+	addWin("rebill_multiplier", total.Multiplier(), "ratio")
+	addWin("sessions", int64(len(sessions)), "sessions")
+	addWin("sessions_with_cost_state", int64(len(costStates)), "sessions")
+	addWin("sessions_without_cost_state", int64(len(sessions)-len(costStates)), "sessions")
+	addWin("cost_state_coverage_percent", percent(int64(len(costStates)), int64(len(sessions))), "percent")
+	addWin("attachment_events", attachTotal.Events, "events")
+	addWin("attachment_bytes", attachTotal.Bytes, "bytes")
+	addWin("attachment_share_percent", percent(attachTotal.Bytes, scanStats.Bytes), "percent")
+	addWin("attachment_types", int64(len(attachByType)), "types")
+	// The estimate rows are windowed corpus rows like any other: under a
+	// window that matched no events they are omitted, never zeroed
+	// (time-window-8).
+	if !bld.win.Active() || bld.matched {
+		bld.rows(
+			EstimatedMetric("allocated_cost_usd", "corpus", "", allocated, "microdollars", AllocationMethod),
+			EstimatedMetric("unallocated_cost_usd", "corpus", "", billed-allocated, "microdollars", AllocationMethod))
+	}
 
 	for _, d := range attributionDims {
 		bld.rows(rebillMetrics(d.name, byDim, costByDim)...)

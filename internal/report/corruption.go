@@ -34,17 +34,24 @@ type corruptStat struct {
 // One streaming pass, same as every other command. Only the tool_use id → name
 // map is retained, because a tool_result names an id and never the tool that
 // produced it, so every rate above is a join away from being unattributable.
-func CorruptionEnvelope(dir, version string) (Envelope, error) {
+//
+// Under a window the join map stays corpus-wide (time-window-6): no window cut
+// may sever a join. What the window gates is the per-key aggregation — tools,
+// denial kinds and truncation markers aggregate in-window results only — while
+// defect detection (the ambiguity count, the unmatched audit) stays
+// unconditional.
+func CorruptionEnvelope(dir, version string, w Window) (Envelope, error) {
 	names := map[string]string{} // tool_use_id → tool name
 	tools := map[string]*corruptStat{}
 	markers := map[string]int64{}
 	denials := map[string]int64{} // toolDenialKind → errored results
 
 	var results, unmatched, ambiguousDenials int64
-	b := newBuilder(dir, version, "corruption")
+	b := newBuilder(dir, version, "corruption", w)
 
 	scanStats, err := transcript.Scan(dir, func(ev *transcript.Event) {
-		b.seeTime(ev.Timestamp)
+		b.seeTime(ev.Timestamp, ev.Type)
+		inWin := w.Includes(ev.Timestamp)
 		uses, res := ev.Blocks()
 		for _, u := range uses {
 			names[u.ID] = u.Name
@@ -61,7 +68,8 @@ func CorruptionEnvelope(dir, version string) (Envelope, error) {
 		// block. Measured on 1,045 calls: no event ever carried more than one
 		// tool_result, so the two are one-to-one there. Where they are not,
 		// the denial is counted against every errored result in the event and
-		// the ambiguity is reported rather than assumed away.
+		// the ambiguity is reported rather than assumed away. Defect
+		// detection stays unconditional of the window.
 		errored := 0
 		for _, r := range res {
 			if r.IsError {
@@ -77,6 +85,9 @@ func CorruptionEnvelope(dir, version string) (Envelope, error) {
 			name, ok := names[r.ToolUseID]
 			if !ok {
 				unmatched++
+				continue
+			}
+			if !inWin {
 				continue
 			}
 			s := bucket(tools, name)
@@ -113,21 +124,21 @@ func CorruptionEnvelope(dir, version string) (Envelope, error) {
 		totals.Truncated += s.Truncated
 	}
 
-	add := b.add
-	add("calls", totals.Calls, "calls")
-	add("distinct_tools", int64(len(tools)), "tools")
-	add("errors", totals.Errors, "calls")
-	add("error_rate_percent", percent(totals.Errors, totals.Calls), "percent")
+	add, addWin := b.add, b.addWin
+	addWin("calls", totals.Calls, "calls")
+	addWin("distinct_tools", int64(len(tools)), "tools")
+	addWin("errors", totals.Errors, "calls")
+	addWin("error_rate_percent", percent(totals.Errors, totals.Calls), "percent")
 	// The split, not a replacement. errors keeps its meaning; these say which
 	// half of it is evidence about a tool and which half is about a policy.
-	add("denied", totals.Denied, "calls")
-	add("failures", totals.Failures, "calls")
-	add("failure_rate_percent", percent(totals.Failures, totals.Calls), "percent")
-	add("empty_results", totals.Empty, "calls")
-	add("empty_rate_percent", percent(totals.Empty, totals.Calls), "percent")
-	add("truncated_results", totals.Truncated, "calls")
-	add("truncation_rate_percent", percent(totals.Truncated, totals.Calls), "percent")
-	add("truncation_marker_kinds", int64(len(markers)), "markers")
+	addWin("denied", totals.Denied, "calls")
+	addWin("failures", totals.Failures, "calls")
+	addWin("failure_rate_percent", percent(totals.Failures, totals.Calls), "percent")
+	addWin("empty_results", totals.Empty, "calls")
+	addWin("empty_rate_percent", percent(totals.Empty, totals.Calls), "percent")
+	addWin("truncated_results", totals.Truncated, "calls")
+	addWin("truncation_rate_percent", percent(totals.Truncated, totals.Calls), "percent")
+	addWin("truncation_marker_kinds", int64(len(markers)), "markers")
 	add("unmatched_results", unmatched, "blocks")
 
 	b.rows(corruptMetrics(tools)...)

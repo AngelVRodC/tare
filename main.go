@@ -111,9 +111,10 @@ func run(args []string, out io.Writer) error {
 		top = 0
 	}
 	// Before resolveDir, so a malformed bound fails loudly before anything
-	// else — and before any corpus is read. T4 threads the resulting Window
-	// through the envelope constructors; this discards it until then.
-	if _, err := report.NewWindow(*sinceFlag, *untilFlag); err != nil {
+	// else — and before any corpus is read. The parsed Window threads into
+	// every envelope constructor below.
+	w, err := report.NewWindow(*sinceFlag, *untilFlag)
+	if err != nil {
 		return err
 	}
 	// After the parse, because the default --dir depends on --harness and both
@@ -126,7 +127,7 @@ func run(args []string, out io.Writer) error {
 
 	switch cmd {
 	case "scan":
-		env, err := report.ScanEnvelope(dir, version)
+		env, err := report.ScanEnvelope(dir, version, w)
 		if err != nil {
 			return err
 		}
@@ -141,7 +142,7 @@ func run(args []string, out io.Writer) error {
 		if harness == harnessOpenCode {
 			toolsEnvelope = report.OpenCodeToolsEnvelope
 		}
-		env, err := toolsEnvelope(dir, version)
+		env, err := toolsEnvelope(dir, version, w)
 		if err != nil {
 			return err
 		}
@@ -150,7 +151,7 @@ func run(args []string, out io.Writer) error {
 		}
 		return report.RenderTools(out, env)
 	case "attribute":
-		env, err := report.AttributeEnvelope(dir, version)
+		env, err := report.AttributeEnvelope(dir, version, w)
 		if err != nil {
 			return err
 		}
@@ -159,7 +160,7 @@ func run(args []string, out io.Writer) error {
 		}
 		return report.RenderAttribute(out, env, top)
 	case "corruption":
-		env, err := report.CorruptionEnvelope(dir, version)
+		env, err := report.CorruptionEnvelope(dir, version, w)
 		if err != nil {
 			return err
 		}
@@ -179,7 +180,7 @@ func run(args []string, out io.Writer) error {
 		if isTTY() {
 			progress = os.Stderr
 		}
-		rep, err := report.BuildReport(dir, version, progress)
+		rep, err := report.BuildReport(dir, version, w, progress)
 		if err != nil {
 			return err
 		}

@@ -74,7 +74,7 @@ func attributeCorpus(t *testing.T, lines ...string) Envelope {
 		[]byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env, err := AttributeEnvelope(dir, "test")
+	env, err := AttributeEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("AttributeEnvelope: %v", err)
 	}
@@ -629,5 +629,92 @@ func TestAbsentModelsCollapse(t *testing.T) {
 	}
 	if n := strings.Count(absent[0], "haiku-bg"); n != 1 {
 		t.Errorf("a model billed in two sessions must be named once, named %d times: %q", n, absent[0])
+	}
+}
+
+// isZeroValue reports whether a metric value is a numeric zero — the shape a
+// window-emptied keyless row would take if it were emitted instead of omitted.
+func isZeroValue(v any) bool {
+	switch n := v.(type) {
+	case int:
+		return n == 0
+	case int64:
+		return n == 0
+	case float64:
+		return n == 0
+	}
+	return false
+}
+
+// TestAttributeEmptyWindowOmitsNotZeroes extends the time-window-8 gate to the
+// attribute command: when the window matches no events, every windowed KEYLESS
+// corpus row is omitted — a measured zero the window emptied is an over-claim
+// Validate cannot catch — and exactly one warning states the miss.
+//
+// attribute has no corpus-wide keyless row to keep rendering (files/bytes and
+// parse errors belong to scan), so its corpus block is empty by design under a
+// no-match window; the C1 warning is what still renders. The estimated money
+// pair is gated by the same omit path.
+func TestAttributeEmptyWindowOmitsNotZeroes(t *testing.T) {
+	dir := t.TempDir()
+	lines := []string{
+		usageLine(t, "s1", "msg_1", "claude-opus-5", tokens{in: 100, out: 10, read: 200, c5m: 30},
+			map[string]string{"attributionSkill": "skill-1"}),
+		costLine(t, "s1", 0.7, nil),
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.jsonl"),
+		[]byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWindow("2030-01-01", "2030-01-31")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := AttributeEnvelope(dir, "test", w)
+	if err != nil {
+		t.Fatalf("AttributeEnvelope: %v", err)
+	}
+
+	// No windowed keyless row may exist at all, let alone carry a zero.
+	for _, m := range env.Metrics {
+		if m.Dimension != "corpus" || m.Key != "" || m.Derivation != Measured {
+			continue
+		}
+		if isZeroValue(m.Value) {
+			t.Errorf("%s = %v emitted over an empty window — omit, never zero", m.Name, m.Value)
+		}
+	}
+	for _, name := range []string{
+		"responses_naive", "responses_distinct", "responses_duplicate",
+		"duplicate_rate_percent", "fresh_tokens", "rebilled_tokens",
+		"output_tokens", "thinking_tokens", "rebill_multiplier",
+		"sessions", "sessions_with_cost_state", "sessions_without_cost_state",
+		"cost_state_coverage_percent", "attachment_events", "attachment_bytes",
+		"attachment_share_percent", "attachment_types",
+	} {
+		if m := findMetric(env, name, "corpus", ""); m != nil {
+			t.Errorf("%s = %v emitted over an empty window — omit, never zero", name, m.Value)
+		}
+	}
+	// The estimated money pair rides the same omit path.
+	for _, name := range []string{"allocated_cost_usd", "unallocated_cost_usd"} {
+		if m := findMetric(env, name, "corpus", ""); m != nil {
+			t.Errorf("%s = %v emitted over an empty window — omit, never zero", name, m.Value)
+		}
+	}
+	// Exactly one warning states the miss.
+	n := 0
+	for _, warn := range env.Warnings {
+		if strings.Contains(warn, "matched no events") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d no-match warnings, want exactly one: %v", n, env.Warnings)
+	}
+	// The C1 warning still renders — the run is windowed even when it matched
+	// nothing, and the reader is owed the four items before the empty table.
+	if !strings.Contains(strings.Join(env.Warnings, "\n"), "a lexical subset of the corpus") {
+		t.Errorf("warnings = %v, want the C1 warning", env.Warnings)
 	}
 }

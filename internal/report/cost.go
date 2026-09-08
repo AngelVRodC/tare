@@ -2,6 +2,7 @@ package report
 
 import (
 	"math"
+	"strings"
 
 	"github.com/AngelVRodC/tare/internal/transcript"
 )
@@ -10,17 +11,37 @@ import (
 // row carries it; no dollar row is ever tagged measured.
 const AllocationMethod = "session-cost-by-weighted-tokens"
 
-// The five published Anthropic price multipliers, relative to base input
-// price. Ratios only — no absolute price ever enters this program, and the
+// The published Anthropic price multipliers, relative to base input price.
+// Ratios only — no absolute price ever enters this program, and the
 // allocation is pinned to the measured costUSD, so a wrong ratio distorts the
 // split between rows without moving the total.
 const (
-	weightInput         = 1.0
-	weightOutput        = 5.0
-	weightCacheRead     = 0.1
-	weightCacheCreate5m = 1.25
-	weightCacheCreate1h = 2.0
+	weightInput          = 1.0
+	weightOutput         = 5.0
+	weightCacheRead      = 0.1
+	weightCacheReadFable = 0.025
+	weightCacheCreate5m  = 1.25
+	weightCacheCreate1h  = 2.0
 )
+
+// fableMarkers pick the model families whose cache reads are priced at
+// weightCacheReadFable, a quarter of the default. The match is a lowercase
+// substring on the model id — version suffixes ride along, unknown ids fall
+// back to weightCacheRead fail-closed. Documented multipliers, asserted by
+// TestFableWeightsMatchBilling against billing computed at the same ratios.
+var fableMarkers = []string{"fable-5-1", "mythos-5-1"}
+
+// cacheReadWeight selects the cache-read multiplier for one response's model.
+// "<synthetic>", the empty id and anything unrecognized weigh at the default.
+func cacheReadWeight(model string) float64 {
+	id := strings.ToLower(model)
+	for _, marker := range fableMarkers {
+		if strings.Contains(id, marker) {
+			return weightCacheReadFable
+		}
+	}
+	return weightCacheRead
+}
 
 // responseWeight scores one response in units of base input tokens.
 //
@@ -30,7 +51,7 @@ const (
 func responseWeight(u *transcript.Usage) float64 {
 	return weightInput*float64(u.Input) +
 		weightOutput*float64(u.Output) +
-		weightCacheRead*float64(u.CacheRead) +
+		cacheReadWeight(u.Model)*float64(u.CacheRead) +
 		weightCacheCreate5m*float64(u.CacheCreate5m) +
 		weightCacheCreate1h*float64(u.CacheCreate1h)
 }

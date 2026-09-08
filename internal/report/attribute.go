@@ -139,8 +139,12 @@ func AttributeEnvelope(dir, version string, w Window) (Envelope, error) {
 			return
 		}
 		if at := ev.Attachment(); at != nil {
-			attachTotal.add(ev.LineBytes)
-			bucket(attachByType, at.Type).add(ev.LineBytes)
+			attachTotal.add(ev.PayloadBytes())
+			bucket(attachByType, at.Type).add(ev.PayloadBytes())
+			// Keyed rows here measure rendered text (listingBytes, pairedBytes),
+			// a strict subset inside their event's payload — a lower bound
+			// within their type, never a sum-equality claim against the rows
+			// above, and nothing Envelope.Validate needs to know about.
 			for k, b := range at.KeyBytes {
 				bucket(attachByKey, dimKey{at.KeyDimension, k}).add(b)
 			}
@@ -241,7 +245,7 @@ func AttributeEnvelope(dir, version string, w Window) (Envelope, error) {
 	bld.rows(attachMetrics("attachment_type", attachByType)...)
 	for _, dim := range []string{
 		transcript.DimSkill, transcript.DimMcpServer, transcript.DimMcpTool,
-		transcript.DimAgent, transcript.DimHookName,
+		transcript.DimAgent, transcript.DimHookName, transcript.DimInstructionFile,
 	} {
 		bld.rows(attachKeyMetrics(dim, attachByKey)...)
 	}

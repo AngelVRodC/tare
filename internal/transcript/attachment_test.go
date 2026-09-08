@@ -15,11 +15,14 @@ func TestAttachmentTwoLevel(t *testing.T) {
 		wantDim string
 		wantKey map[string]int64
 	}{{
-		name:    "hook_success keys on hookName and takes the whole line",
+		// The hook's bytes are the attachment object's own raw JSON (66 bytes),
+		// never the JSONL record line: LineBytes is set to 999 on purpose, so
+		// any figure that survives from the line is envelope, not payload.
+		name:    "hook_success keys on hookName and measures the payload",
 		payload: `{"type":"hook_success","hookName":"boost-awareness","command":"x"}`,
 		wantTyp: "hook_success",
 		wantDim: DimHookName,
-		wantKey: map[string]int64{"boost-awareness": 999},
+		wantKey: map[string]int64{"boost-awareness": 66},
 	}, {
 		name: "skill_listing keys on names, measured off the rendered line",
 		payload: `{"type":"skill_listing","skillCount":2,"names":["alpha","beta"],` +
@@ -107,6 +110,171 @@ func TestAttachmentTolerantContent(t *testing.T) {
 	if at := ev.Attachment(); at == nil || at.Type != untypedKey {
 		t.Errorf("undecodable type yielded %+v, want the %q bucket", at, untypedKey)
 	}
+}
+
+// TestListingBytesLongestPrefix is the defect-4 gate. A bullet opens an entry
+// only when the text after "- " begins with a declared name followed by ":",
+// and the LONGEST declared name wins — "desplega" and "desplega:brainstorm"
+// both prefix the third bullet, the longer one owns it. The description after
+// a second colon belongs to the entry. A bullet matching nothing declared
+// continues the open entry (its bytes stay with sdd-verify) and never opens
+// one of its own; the preamble before any match lands on no key at all.
+func TestListingBytesLongestPrefix(t *testing.T) {
+	ev := Event{Type: "attachment", LineBytes: 1, AttachmentRaw: []byte(
+		`{"type":"skill_listing","names":["commit","desplega","desplega:brainstorm","sdd-verify"],` +
+			`"content":"- note: preamble that matches nothing\n` +
+			`- commit: plain skill\n` +
+			`- desplega:brainstorm: does X: with colons\n` +
+			`- sdd-verify: runs verification\n` +
+			`- unmatched: detail continuing sdd-verify"}`)}
+	at := ev.Attachment()
+	if at == nil {
+		t.Fatal("Attachment() returned nil")
+	}
+	if at.KeyDimension != DimSkill {
+		t.Errorf("KeyDimension = %q, want %q", at.KeyDimension, DimSkill)
+	}
+	want := map[string]int64{
+		"commit":              22,
+		"desplega:brainstorm": 43,
+		"sdd-verify":          73,
+	}
+	if len(at.KeyBytes) != len(want) {
+		t.Fatalf("KeyBytes = %v, want %v", at.KeyBytes, want)
+	}
+	for k, n := range want {
+		if at.KeyBytes[k] != n {
+			t.Errorf("KeyBytes[%q] = %d, want %d", k, at.KeyBytes[k], n)
+		}
+	}
+	if _, leaked := at.KeyBytes["desplega"]; leaked {
+		t.Errorf("desplega got bytes — the shorter prefix won over desplega:brainstorm")
+	}
+	if _, leaked := at.KeyBytes["note"]; leaked {
+		t.Errorf("an unmatched preamble opened an entry of its own")
+	}
+}
+
+// TestInstructionsKeyedByFile is the defect-2 gate: `instructions` — the
+// largest unattributed attachment type on the corpus at 8.9 MB — keys on
+// files[].path, measured against its rendered content; a file with no content
+// costs its path's own length (the pairedBytes fallback). Missing or empty
+// `files` yields no keys and no dimension: absent stays absent, never zero.
+func TestInstructionsKeyedByFile(t *testing.T) {
+	t.Run("paths become keys at their rendered cost", func(t *testing.T) {
+		ev := Event{Type: "attachment", LineBytes: 1, AttachmentRaw: []byte(
+			`{"type":"instructions","files":[{"path":"a.md","content":"AAA"},{"path":"b.md","content":"BBBB"}]}`)}
+		at := ev.Attachment()
+		if at == nil {
+			t.Fatal("Attachment() returned nil")
+		}
+		if at.KeyDimension != DimInstructionFile {
+			t.Errorf("KeyDimension = %q, want %q", at.KeyDimension, DimInstructionFile)
+		}
+		want := map[string]int64{"a.md": 3, "b.md": 4}
+		if len(at.KeyBytes) != len(want) {
+			t.Fatalf("KeyBytes = %v, want %v", at.KeyBytes, want)
+		}
+		for k, n := range want {
+			if at.KeyBytes[k] != n {
+				t.Errorf("KeyBytes[%q] = %d, want %d", k, at.KeyBytes[k], n)
+			}
+		}
+	})
+
+	t.Run("missing content falls back to the path length", func(t *testing.T) {
+		ev := Event{Type: "attachment", LineBytes: 1, AttachmentRaw: []byte(
+			`{"type":"instructions","files":[{"path":"c.md"},{"path":"d.md","content":"x"}]}`)}
+		at := ev.Attachment()
+		if at == nil || at.KeyDimension != DimInstructionFile {
+			t.Fatalf("KeyDimension = %v, want %q", at, DimInstructionFile)
+		}
+		if at.KeyBytes["c.md"] != 4 || at.KeyBytes["d.md"] != 1 {
+			t.Errorf("KeyBytes = %v, want c.md at its path length 4 and d.md at 1", at.KeyBytes)
+		}
+	})
+
+	t.Run("absent files stay absent", func(t *testing.T) {
+		for _, payload := range []string{
+			`{"type":"instructions"}`,
+			`{"type":"instructions","files":[]}`,
+		} {
+			ev := Event{Type: "attachment", LineBytes: 1, AttachmentRaw: []byte(payload)}
+			at := ev.Attachment()
+			if at == nil || at.KeyDimension != "" || len(at.KeyBytes) != 0 {
+				t.Errorf("payload %s: KeyDimension = %q, KeyBytes = %v, want none",
+					payload, at.KeyDimension, at.KeyBytes)
+			}
+		}
+	})
+}
+
+// TestDimensionNamesDistinct is the collision gate (defect 2): the new
+// attachment dimension must not equal any mechanism-1 dimension name or the
+// session dimension, or key rows would land in the wrong table.
+func TestDimensionNamesDistinct(t *testing.T) {
+	mechanism1 := []string{
+		"attribution_skill", "attribution_plugin", "attribution_agent",
+		"attribution_mcp_server", "attribution_mcp_tool", "session",
+	}
+	for _, name := range mechanism1 {
+		if DimInstructionFile == name {
+			t.Errorf("DimInstructionFile collides with %q", name)
+		}
+	}
+}
+
+// TestDeferredToolsRecordKeyedByName is the defect-3 gate: the record event
+// keys on entries[].name under DimMcpTool, mirroring its `deferred_tools_delta`
+// sibling — each name costs its own raw entry JSON, the biggest single upfront
+// tool-definition load on the corpus at 348.5 kB. An entry with no name costs
+// nothing to nobody; empty or missing `entries` yields no keys and no
+// dimension.
+func TestDeferredToolsRecordKeyedByName(t *testing.T) {
+	t.Run("entry names become mcp_tool keys at raw entry length", func(t *testing.T) {
+		ev := Event{Type: "attachment", LineBytes: 1, AttachmentRaw: []byte(
+			`{"type":"deferred_tools_record","entries":[{"name":"tool_a","description":"d1"},{"name":"tool_b"}]}`)}
+		at := ev.Attachment()
+		if at == nil {
+			t.Fatal("Attachment() returned nil")
+		}
+		if at.KeyDimension != DimMcpTool {
+			t.Errorf("KeyDimension = %q, want %q", at.KeyDimension, DimMcpTool)
+		}
+		want := map[string]int64{"tool_a": 36, "tool_b": 17}
+		if len(at.KeyBytes) != len(want) {
+			t.Fatalf("KeyBytes = %v, want %v", at.KeyBytes, want)
+		}
+		for k, n := range want {
+			if at.KeyBytes[k] != n {
+				t.Errorf("KeyBytes[%q] = %d, want %d", k, at.KeyBytes[k], n)
+			}
+		}
+	})
+
+	t.Run("unnamed entries cost nothing", func(t *testing.T) {
+		ev := Event{Type: "attachment", LineBytes: 1, AttachmentRaw: []byte(
+			`{"type":"deferred_tools_record","entries":[{"description":"no name here"}]}`)}
+		at := ev.Attachment()
+		if at == nil || at.KeyDimension != "" || len(at.KeyBytes) != 0 {
+			t.Errorf("unnamed-only entries: KeyDimension = %q, KeyBytes = %v, want none",
+				at.KeyDimension, at.KeyBytes)
+		}
+	})
+
+	t.Run("absent entries stay absent", func(t *testing.T) {
+		for _, payload := range []string{
+			`{"type":"deferred_tools_record"}`,
+			`{"type":"deferred_tools_record","entries":[]}`,
+		} {
+			ev := Event{Type: "attachment", LineBytes: 1, AttachmentRaw: []byte(payload)}
+			at := ev.Attachment()
+			if at == nil || at.KeyDimension != "" || len(at.KeyBytes) != 0 {
+				t.Errorf("payload %s: KeyDimension = %q, KeyBytes = %v, want none",
+					payload, at.KeyDimension, at.KeyBytes)
+			}
+		}
+	})
 }
 
 // TestSkillListingMultilineDescription is the reason names and content are not

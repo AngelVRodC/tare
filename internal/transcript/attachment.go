@@ -39,6 +39,11 @@ const (
 	DimMcpTool   = "mcp_tool"
 	DimMcpServer = "mcp_server"
 	DimAgent     = "agent"
+	// DimInstructionFile keys the `instructions` type by files[].path. It is
+	// an attachment sub-dimension, deliberately named apart from every
+	// mechanism-1 attribution dimension and from session — a collision would
+	// file rendered-file bytes under the wrong table.
+	DimInstructionFile = "instruction_file"
 )
 
 // Attachment decodes the attribution off an `attachment` event, or returns nil
@@ -74,6 +79,11 @@ func (ev *Event) Attachment() *Attachment {
 		AddedTypes  []string        `json:"addedTypes"`
 		AddedLines  []string        `json:"addedLines"`
 		AddedBlocks []string        `json:"addedBlocks"`
+		Files       []struct {
+			Path    string  `json:"path"`
+			Content *string `json:"content"`
+		} `json:"files"`
+		Entries []json.RawMessage `json:"entries"`
 	}
 	if json.Unmarshal(ev.AttachmentRaw, &keys) != nil {
 		return at
@@ -82,7 +92,7 @@ func (ev *Event) Attachment() *Attachment {
 	switch {
 	case head.HookName != "" && strings.HasPrefix(head.Type, "hook_"):
 		at.KeyDimension = DimHookName
-		at.KeyBytes = map[string]int64{head.HookName: ev.LineBytes}
+		at.KeyBytes = map[string]int64{head.HookName: ev.PayloadBytes()}
 	case head.Type == "skill_listing":
 		at.KeyDimension = DimSkill
 		at.KeyBytes = listingBytes(keys.Names, jsonString(keys.Content))
@@ -95,6 +105,28 @@ func (ev *Event) Attachment() *Attachment {
 	case head.Type == "agent_listing_delta":
 		at.KeyDimension = DimAgent
 		at.KeyBytes = pairedBytes(keys.AddedTypes, keys.AddedLines)
+	case head.Type == "instructions":
+		at.KeyDimension = DimInstructionFile
+		names := make([]string, 0, len(keys.Files))
+		rendered := make([]string, 0, len(keys.Files))
+		for _, f := range keys.Files {
+			names = append(names, f.Path)
+			// No content field means the rendered text never existed: the
+			// path's own length is what it cost. An empty content that IS
+			// present renders as zero, as it should.
+			if f.Content != nil {
+				rendered = append(rendered, *f.Content)
+			} else {
+				rendered = append(rendered, f.Path)
+			}
+		}
+		at.KeyBytes = pairedBytes(names, rendered)
+	case head.Type == "deferred_tools_record":
+		// The record is the delta's sibling: same key, same dimension, but it
+		// ships whole entries rather than name/line pairs, so the entry's own
+		// raw JSON is what each name cost.
+		at.KeyDimension = DimMcpTool
+		at.KeyBytes = entryBytes(keys.Entries)
 	}
 	if len(at.KeyBytes) == 0 {
 		at.KeyDimension = ""
@@ -131,20 +163,50 @@ func pairedBytes(keys, rendered []string) map[string]int64 {
 	return out
 }
 
+// entryBytes keys each entry's raw JSON length by its name. An entry with no
+// name has nothing to attach its bytes to, so it costs its own attribution
+// only — never the event's bytes, which the type row already carries.
+func entryBytes(entries []json.RawMessage) map[string]int64 {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(entries))
+	for _, raw := range entries {
+		var e struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(raw, &e) != nil || e.Name == "" {
+			continue
+		}
+		out[e.Name] += int64(len(raw))
+	}
+	return out
+}
+
 // listingBytes attributes each line of a rendered listing to the key it names.
 //
 // An index pairing would be wrong here: a description can carry its own
 // newlines, and measured on the corpus `content` has two more lines than
 // `names` on nearly every event. So a line opens a new entry only when it
-// names a key the attachment itself declared, and continuation lines stay with
-// the entry above them.
+// names a key the attachment itself declared — the text after "- " beginning
+// with name+":" — and continuation lines stay with the entry above them.
+//
+// Cutting at the first colon would be wrong: declared names themselves contain
+// colons (89% of corpus listings carry plugin-namespaced skills), and cutting
+// at the last would be wrong too, because descriptions contain colons. No cut
+// position works; matching the prefix against the declared set does, with the
+// longest declared name winning when one name prefixes another.
 func listingBytes(names []string, content string) map[string]int64 {
 	if len(names) == 0 || content == "" {
 		return nil
 	}
 	declared := make(map[string]bool, len(names))
+	longest := 0
 	for _, n := range names {
 		declared[n] = true
+		if len(n) > longest {
+			longest = len(n)
+		}
 	}
 
 	out := make(map[string]int64, len(names))
@@ -152,7 +214,7 @@ func listingBytes(names []string, content string) map[string]int64 {
 	current := ""
 	for i, line := range lines {
 		if rest, isEntry := strings.CutPrefix(line, "- "); isEntry {
-			if k, _, found := strings.Cut(rest, ":"); found && declared[k] {
+			if k := matchDeclared(rest, declared, longest); k != "" {
 				current = k
 			}
 		}
@@ -165,4 +227,21 @@ func listingBytes(names []string, content string) map[string]int64 {
 		}
 	}
 	return out
+}
+
+// matchDeclared returns the longest declared name that prefixes rest followed
+// by a colon, or "" when none does. Candidates are cut at colon positions
+// rather than the first colon because declared names themselves carry colons;
+// prefixes only grow, so the last matching candidate is the longest.
+func matchDeclared(rest string, declared map[string]bool, longest int) string {
+	if len(rest) > longest+1 {
+		rest = rest[:longest+1] // the longest name plus its colon
+	}
+	match := ""
+	for i := 0; i < len(rest); i++ {
+		if rest[i] == ':' && declared[rest[:i]] {
+			match = rest[:i]
+		}
+	}
+	return match
 }

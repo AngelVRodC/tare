@@ -387,6 +387,39 @@ func TestMissingCostState(t *testing.T) {
 	}
 }
 
+// TestAttachmentBytesMeasurePayload pins the byte unit (defect 5): every
+// attachment figure is the attachment object's own raw JSON, never the JSONL
+// record line. The fixture's record carries a fat envelope (uuid, timestamp,
+// cwd, sessionId, gitBranch, version) and a top-level `rendered` field
+// duplicating the content, so the line is strictly fatter than the payload —
+// under the old LineBytes rule both figures below over-count the envelope.
+func TestAttachmentBytesMeasurePayload(t *testing.T) {
+	const payload = `{"type":"output_style","style":"A style whose raw payload is this whole object"}`
+	line := marshal(t, map[string]any{
+		"type":       "attachment",
+		"uuid":       "u1",
+		"timestamp":  "2026-09-01T10:00:00.000Z",
+		"cwd":        "/tmp/proj",
+		"sessionId":  "s1",
+		"gitBranch":  "main",
+		"version":    "1.2.3",
+		"rendered":   payload,
+		"attachment": json.RawMessage(payload),
+	})
+	if int64(len(line)) <= int64(len(payload)) {
+		t.Fatalf("fixture is not fat: line %d, payload %d", len(line), len(payload))
+	}
+	env := attributeCorpus(t, line)
+
+	want := int64(len(payload))
+	if got := mustMetric(t, env, "attachment_bytes", "corpus", "").Value; got != want {
+		t.Errorf("corpus attachment_bytes = %v, want payload %d", got, want)
+	}
+	if got := mustMetric(t, env, "attachment_bytes", "attachment_type", "output_style").Value; got != want {
+		t.Errorf("output_style attachment_bytes = %v, want payload %d", got, want)
+	}
+}
+
 // TestAttachmentRollupDimension is the corrected-dimension gate at the report
 // level: attachment volume is grouped by attachment.type, and the three types
 // that carry the un-redacted names appear with their own keys — none of which

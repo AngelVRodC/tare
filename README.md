@@ -95,6 +95,29 @@ cd tare && go build -o tare .
 
 `--harness opencode` also needs the `sqlite3` binary on PATH.
 
+### Putting tare on your PATH
+
+If the shell cannot find `tare` after a successful install, that directory is
+not on your PATH, and `go install` prints nothing either way. If `go env GOBIN`
+prints a different path, that is where the binary went; use that one below
+instead.
+
+bash — append the line to `~/.bashrc`:
+
+```bash
+echo 'export PATH="$PATH:$(go env GOPATH)/bin"' >> ~/.bashrc
+```
+
+fish — one command, which persists on its own. fish reads none of
+`~/.profile`, `~/.bashrc` or `~/.zshrc`, so it needs its own line:
+
+```fish
+fish_add_path (go env GOPATH)/bin
+```
+
+Run either one after `go install`, not before: `go install` creates the
+directory, and `fish_add_path` skips a directory that does not exist.
+
 ## Updating
 
 ```bash
@@ -485,6 +508,7 @@ its corpus by 30.
 
 | Symptom | Fix |
 |---|---|
+| `command not found: tare`, or `fish: Unknown command: tare` | The binary exists but the directory `go install` wrote it to is not on PATH, and `go install` prints nothing either way. See [Putting tare on your PATH](#putting-tare-on-your-path). |
 | `tare: no command given` | A subcommand is required. `tare` with no arguments prints the list. |
 | `tare: flags go after the command` | Exactly that: `tare scan --json`, not `tare --json scan`. |
 | `tare: unknown command "tool"` | Not a subcommand. `tare --help` prints the five that are. |

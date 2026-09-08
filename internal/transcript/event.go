@@ -61,14 +61,22 @@ type Event struct {
 	// File is the transcript this event was read from. Not a transcript field.
 	File string `json:"-"`
 	// LineBytes is the length of the JSONL line this event was decoded from,
-	// newline excluded. It is how attachment volume is measured — the cost of
-	// an attachment is the line it occupies. Not a transcript field.
+	// newline excluded. Not a transcript field.
 	LineBytes int64 `json:"-"`
 	// InSubagentDir reports whether File sits under a `subagents/` directory.
 	// One file is not one session: subagent transcripts share the parent
 	// sessionId with their own agentId. Not a transcript field.
 	InSubagentDir bool `json:"-"`
 }
+
+// PayloadBytes is the length of the attachment object's own raw JSON, the
+// unit every attachment byte figure is measured in. The JSONL line carries the
+// same payload wrapped in envelope fields (uuid, timestamp, cwd, sessionId,
+// gitBranch, version) plus a top-level `rendered` duplicate — measured at
+// 1.44x aggregate on the corpus — so the line is the wrapper's cost, not the
+// attachment's. Attachment() returns nil when AttachmentRaw is empty, so every
+// caller sees len >= 1: absent never decays into zero.
+func (ev *Event) PayloadBytes() int64 { return int64(len(ev.AttachmentRaw)) }
 
 // IsWorkflowJournal reports whether this line is a Workflow-tool journal
 // record rather than a transcript event.

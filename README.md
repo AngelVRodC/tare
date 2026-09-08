@@ -344,7 +344,7 @@ and not only by eye:
 ```json
 {
   "tool": "tare",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "command": "scan",
   "corpus": {
     "dir": "/Users/you/.claude/projects",
@@ -450,31 +450,36 @@ claim, so it gets its own row rather than being quietly folded into the zero.
 
 ## A run on the author's corpus
 
-One `tare report` over a frozen snapshot, 2026-09-06. A live corpus moves, so
-these are one run, not a constant.
+One `tare report` over a frozen snapshot, 2026-09-07, taken with v0.4.0 — the
+first release where attachment bytes measure the attachment payload, not the
+JSONL record around it. A live corpus moves, so these are one run, not a
+constant.
 
-**Corpus** — 396 files, 257.8 MB, 2026-08-06 to 2026-09-06, written by 28 Claude
-Code versions. 76,395 events across 21 event types, 0 parse errors.
+**Corpus** — 495 files, 334.0 MB, 2026-08-10 to 2026-09-08, written by 29 Claude
+Code versions. 97,519 events across 19 event types, 0 parse errors.
 
-**Tools** — 63 distinct tools, 14,756 calls. 36.4 MB of context sent into them,
-40.8 MB produced back. 14,756 `tool_use` blocks against 14,756 `tool_result`: 0
-unmatched. Two tools carry the corpus: `Bash` at 47.2% of all context bytes and
-`Read` at 35.4%, both graded `***`.
+**Tools** — 64 distinct tools, 18,401 calls. 44.2 MB of context sent into them,
+49.5 MB produced back. 18,401 `tool_use` blocks against 18,401 `tool_result`: 0
+unmatched. Two tools carry the corpus: `Bash` at 47.2% of all context bytes,
+graded `***`, and `Read` at 34.4%, graded `**`.
 
-**Re-billing** — 59,351,143 fresh tokens were re-billed as 1,668,436,665 cached
-reads: a **28× multiplier**. Prior context charged again is where the money
+**Re-billing** — 71,915,548 fresh tokens were re-billed as 2,067,469,945 cached
+reads: a **29× multiplier**. Prior context charged again is where the money
 goes, and it is measured, not modelled.
 
-**Attachments** — 64.0 MB across 35 attachment types, **24.8% of the corpus**.
-That is the tare: weight that is not payload.
+**Attachments** — 64.4 MB across 38 attachment types, **19.3% of the corpus**.
+That is the tare: weight that is not payload. (v0.3.0 counted the same corpus
+at 24.8% because its unit was the whole JSONL record — envelope included. The
+share did not shrink; the ruler got honest. See the v0.4.0 release notes.)
 
 **Corruption** — 2.5% of calls returned an error, 1.5% returned nothing at all,
-0.1% carried a truncation marker.
+0.2% carried a truncation marker.
 
-**What the numbers cannot cover** — 56.4% of assistant responses (15,664 of
-27,788) repeat a `message.id` already seen and are deduplicated. Only 63 of 141
-sessions (44.7%) carry a billing record. Claude Code's own cache counted 144
-sessions against 141 transcripts still on disk: 3 gone.
+**What the numbers cannot cover** — 56.2% of assistant responses (19,657 of
+34,948) repeat a `message.id` already seen and are deduplicated. Only 86 of 174
+sessions (49.4%) carry a billing record. Claude Code's own stats cache still
+counts 144 sessions against 174 transcripts on disk — the cache itself trails
+its corpus by 30.
 
 ## Troubleshooting
 

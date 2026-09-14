@@ -122,6 +122,32 @@ func TestBlocksToolUse(t *testing.T) {
 	}
 }
 
+// TestBlocksCarriesSkillInput pins the RawMessage deferral: a tool_use's
+// `input` is carried undecoded, so the scan layer pays nothing for the ~100%
+// of uses that are not Skill. Input is nil when the block carries no input —
+// nil, not an empty object.
+func TestBlocksCarriesSkillInput(t *testing.T) {
+	ev := Event{Message: []byte(`{"role":"assistant","content":[` +
+		`{"type":"tool_use","id":"t1","name":"Skill","input":{"skill":"jest-testing"}}]}`)}
+	uses, _ := ev.Blocks()
+	if len(uses) != 1 {
+		t.Fatalf("got %d uses, want 1", len(uses))
+	}
+	if string(uses[0].Input) != `{"skill":"jest-testing"}` {
+		t.Errorf("Input = %s, want the raw input object", uses[0].Input)
+	}
+
+	bare := Event{Message: []byte(`{"role":"assistant","content":[` +
+		`{"type":"tool_use","id":"t2","name":"Bash"}]}`)}
+	uses, _ = bare.Blocks()
+	if len(uses) != 1 {
+		t.Fatalf("got %d uses, want 1", len(uses))
+	}
+	if uses[0].Input != nil {
+		t.Errorf("Input = %s, want nil when the block carries no input", uses[0].Input)
+	}
+}
+
 // TestIsError pins the error flag the rollup counts on.
 func TestIsError(t *testing.T) {
 	dir := writeCorpus(t, map[string]string{

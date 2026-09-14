@@ -70,6 +70,211 @@ func metricOrNil(env Envelope, name, dimension, key string) any {
 	return nil
 }
 
+// attachment is an `attachment` event whose `attachment` object is spelled
+// raw, which is what the rent fixtures vary.
+func attachment(ts, raw string) string {
+	return `{"type":"attachment","sessionId":"s1","timestamp":"` + ts + `","attachment":` + raw + `}`
+}
+
+// TestToolsEnvelopeRentJoinsCalls pins the join: rent (attachment bytes an
+// installed thing costs just by existing) lands on the same key as its calls.
+//
+// The fixture exercises every normalization branch at once — a colon rent key
+// that matches a call row, one that matches nothing, and a free-form key —
+// plus the honest-zero rule: a rent-only entity emits a FULL measured-zero
+// stat row (all five metrics; the counter streamed the whole corpus), while a
+// called entity with no rent emits no rent row at all (absent is not zero).
+func TestToolsEnvelopeRentJoinsCalls(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"),
+		[]byte(`{"enabledPlugins":{"sre@acme":true}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	dir := toolCorpus(t,
+		use("t1", "mcp__plugin_sre_grafana-prod__query"),
+		result("t1", `"aaaa"`, false),
+		use("t2", "Bash"),
+		result("t2", `"bb"`, false),
+		attachment("2026-09-01T10:00:02.000Z",
+			`{"type":"mcp_instructions_delta",`+
+				`"addedNames":["plugin:sre:grafana-prod","plugin:sre:never-called","claude.ai Notion"],`+
+				`"addedBlocks":["INSTR1","INSTR2","FREEFORM"]}`),
+	)
+	env, err := ToolsEnvelope(dir, "test", Window{})
+	if err != nil {
+		t.Fatalf("ToolsEnvelope: %v", err)
+	}
+
+	// Joined: rent and calls on one key — the normalized segment, the
+	// call-side spelling, never the colon form.
+	if got := metricValue(t, env, "rent_bytes", "mcp_server", "plugin_sre_grafana-prod"); got != int64(6) {
+		t.Errorf("joined rent_bytes = %v, want 6", got)
+	}
+	if got := metricValue(t, env, "calls", "mcp_server", "plugin_sre_grafana-prod"); got != int64(1) {
+		t.Errorf("joined calls = %v, want 1", got)
+	}
+	for _, colon := range []string{"plugin:sre:grafana-prod", "plugin:sre:never-called"} {
+		if got := metricOrNil(env, "rent_bytes", "mcp_server", colon); got != nil {
+			t.Errorf("colon-form rent row %q was emitted — rent keys must normalize to the call-side spelling", colon)
+		}
+	}
+
+	// Rent-only entity: full measured-zero stat row beside its rent.
+	if got := metricValue(t, env, "rent_bytes", "mcp_server", "plugin_sre_never-called"); got != int64(6) {
+		t.Errorf("rent-only rent_bytes = %v, want 6", got)
+	}
+	for _, m := range []string{"calls", "context_bytes", "image_bytes", "produced_bytes", "errors"} {
+		if got := metricValue(t, env, m, "mcp_server", "plugin_sre_never-called"); got != int64(0) {
+			t.Errorf("rent-only %s = %v, want measured 0", m, got)
+		}
+	}
+
+	// Called without rent: no rent row — absent, never 0.
+	if got := metricOrNil(env, "rent_bytes", "mcp_server", "Bash"); got != nil {
+		t.Errorf("Bash rent_bytes = %v emitted — called-without-rent must stay absent", got)
+	}
+	// The rent dimensions are mcp_server, skill and plugin — never tool.
+	for _, m := range env.Metrics {
+		if m.Name == "rent_bytes" && m.Dimension == "tool" {
+			t.Errorf("rent_bytes emitted on the tool dimension")
+		}
+	}
+
+	// Plugin-level rent lands on the plugin dim under the plugin name, once.
+	if got := metricValue(t, env, "rent_bytes", "plugin", "sre"); got != int64(12) {
+		t.Errorf("plugin rent_bytes = %v, want 12 (6+6)", got)
+	}
+	// ...and is not double-counted back onto the server segment.
+	if got := metricValue(t, env, "rent_bytes", "mcp_server", "plugin_sre_grafana-prod"); got != int64(6) {
+		t.Errorf("joined server rent_bytes = %v, want 6 — plugin rent must not re-land on the server", got)
+	}
+
+	// Free-form key: verbatim, rent-only, never joined.
+	if got := metricValue(t, env, "rent_bytes", "mcp_server", "claude.ai Notion"); got != int64(8) {
+		t.Errorf("free-form rent_bytes = %v, want 8 verbatim", got)
+	}
+	for _, m := range env.Metrics {
+		if m.Dimension == "plugin" && m.Key == "claude.ai Notion" {
+			t.Errorf("free-form rent leaked onto the plugin dimension")
+		}
+	}
+
+	// Call-side rows are byte-identical to pre-change values.
+	want := map[[3]string]any{
+		{"calls", "tool", "Bash"}:                                        int64(1),
+		{"context_bytes", "tool", "Bash"}:                                int64(2),
+		{"context_bytes", "tool", "mcp__plugin_sre_grafana-prod__query"}: int64(4),
+		{"calls", "corpus", ""}:                                          int64(2),
+	}
+	for k, exp := range want {
+		if got := metricValue(t, env, k[0], k[1], k[2]); got != exp {
+			t.Errorf("%s/%s/%s = %v, want %v — call-side rows must not move", k[0], k[1], k[2], got, exp)
+		}
+	}
+
+	// Authority unavailable: rent prints VERBATIM, no plugin rows, one loud
+	// warning — never a zero.
+	bare := toolCorpus(t,
+		use("t1", "mcp__plugin_sre_grafana-prod__query"),
+		result("t1", `"aaaa"`, false),
+		attachment("2026-09-01T10:00:02.000Z",
+			`{"type":"mcp_instructions_delta","addedNames":["plugin:sre:grafana-prod"],"addedBlocks":["INSTR1"]}`),
+	)
+	t.Setenv("HOME", t.TempDir()) // no settings.json
+	env2, err := ToolsEnvelope(bare, "test", Window{})
+	if err != nil {
+		t.Fatalf("ToolsEnvelope (no authority): %v", err)
+	}
+	if got := metricValue(t, env2, "rent_bytes", "mcp_server", "plugin:sre:grafana-prod"); got != int64(6) {
+		t.Errorf("unnormalized rent_bytes = %v, want 6 verbatim when the authority is unavailable", got)
+	}
+	if got := metricOrNil(env2, "rent_bytes", "plugin", "sre"); got != nil {
+		t.Errorf("plugin rent row emitted with no authority — pluginRent must be omitted")
+	}
+	warned := strings.Join(env2.Warnings, "\n")
+	if !strings.Contains(warned, "plugin rollup unavailable") {
+		t.Errorf("warnings must carry the existing loud branch: %v", env2.Warnings)
+	}
+}
+
+// skillUse is a tool_use carrying an input object, which only Skill uses are
+// ever decoded from.
+func skillUse(ts, id, name, input string) string {
+	return `{"type":"assistant","sessionId":"s1","timestamp":"` + ts + `",` +
+		`"message":{"role":"assistant","content":[{"type":"tool_use","id":"` + id +
+		`","name":"` + name + `","input":` + input + `}]}}`
+}
+
+// TestToolsEnvelopeSkillCalls pins the use-side half of the join: Skill
+// invocations counted off `input.skill`, decoded ONLY for Skill uses.
+func TestToolsEnvelopeSkillCalls(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	// A rent-only skill: listed (rent) but never invoked — skill_calls=0.
+	dir := toolCorpus(t,
+		skillUse("2026-09-01T10:00:00.000Z", "t1", "Skill", `{"skill":"jest-testing"}`),
+		result("t1", `"ok"`, false),
+		skillUse("2026-09-01T10:00:01.000Z", "t2", "Skill", `{"skill":"jest-testing"}`),
+		result("t2", `"ok"`, false),
+		skillUse("2026-09-01T10:00:02.000Z", "t3", "Skill", `"not an object"`),
+		result("t3", `"ok"`, false),
+		skillUse("2026-09-01T10:00:03.000Z", "t4", "Skill", `{}`),
+		result("t4", `"ok"`, false),
+		skillUse("2026-09-01T10:00:04.000Z", "t5", "Bash", `{"skill":"bash-skill","command":"ls"}`),
+		result("t5", `"ok"`, false),
+		attachment("2026-09-01T10:00:05.000Z",
+			`{"type":"skill_listing","names":["never-listed-skill","jest-testing"],`+
+				`"content":"- jest-testing: run tests\n- never-listed-skill: never used"}`),
+	)
+	env, err := ToolsEnvelope(dir, "test", Window{})
+	if err != nil {
+		t.Fatalf("ToolsEnvelope: %v", err)
+	}
+
+	// Skill use with input.skill counted, once per invocation.
+	if got := metricValue(t, env, "skill_calls", "skill", "jest-testing"); got != int64(2) {
+		t.Errorf("jest-testing skill_calls = %v, want 2", got)
+	}
+	// A skill listed but never invoked: an honest measured zero.
+	if got := metricValue(t, env, "skill_calls", "skill", "never-listed-skill"); got != int64(0) {
+		t.Errorf("never-listed-skill skill_calls = %v, want measured 0", got)
+	}
+	// Its rent is counted too — the join has both halves on one row.
+	if got := metricOrNil(env, "rent_bytes", "skill", "never-listed-skill"); got == nil {
+		t.Errorf("rent-only skill has no rent_bytes row")
+	}
+
+	// Malformed Skill input: counted nowhere, NO warning (unknown fails quietly).
+	for _, bad := range []string{"not-a-skill", "(unattributed)"} {
+		if got := metricOrNil(env, "skill_calls", "skill", bad); got != nil {
+			t.Errorf("malformed Skill input produced a %q row", bad)
+		}
+	}
+
+	// A non-Skill use carrying a `skill` input field: NO row — pins that the
+	// scan never decodes input for any other tool name.
+	if got := metricOrNil(env, "skill_calls", "skill", "bash-skill"); got != nil {
+		t.Errorf("Bash use with a skill input created a row — non-Skill uses must not be decoded")
+	}
+	if got := metricValue(t, env, "calls", "tool", "Skill"); got != int64(4) {
+		t.Errorf("Skill calls = %v, want 4 — every invocation is still a tool call", got)
+	}
+	for _, w := range env.Warnings {
+		if strings.Contains(w, "skill") && strings.Contains(w, "not a") || strings.Contains(w, "malformed") {
+			t.Errorf("malformed skill input must fail quietly: %v", w)
+		}
+	}
+}
+
 // TestUnmatchedJoin is the phase gate on the loud half of the contract: a
 // tool_result whose tool_use_id matches nothing is reported, never silently
 // dropped into a bucket or added to a tool that did not produce it. The

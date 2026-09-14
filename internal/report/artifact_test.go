@@ -386,6 +386,61 @@ func TestReportSummaryCitesEnvelopeOnly(t *testing.T) {
 	}
 }
 
+// rentReportCorpus is a report-sized corpus whose tools pass produces rent
+// rows: a colon rent key that joins a called plugin server, and a skill
+// listing whose skill is never invoked.
+func rentReportCorpus(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir() // the pluginNames authority, not under --dir
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"),
+		[]byte(`{"enabledPlugins":{"sre@acme":true}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	const model = "claude-opus-5"
+	tk := tokens{in: 101, out: 23, read: 3_001, c5m: 701}
+	total := transcript.ModelUsage{Input: tk.in, Output: tk.out, CacheRead: tk.read, CacheCreate: tk.c5m}
+	lines := []string{
+		usageLine(t, "s0", "msg_0", model, tk, map[string]string{"attributionSkill": "skill-0"}),
+		costLine(t, "s0", 1.7, map[string]transcript.ModelUsage{model: total}),
+		`{"type":"assistant","sessionId":"s0","timestamp":"2026-09-01T10:00:01.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"mcp__plugin_sre_grafana-prod__query"}]}}`,
+		`{"type":"user","sessionId":"s0","timestamp":"2026-09-01T10:00:02.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"aaaa"}]}}`,
+		`{"type":"attachment","sessionId":"s0","timestamp":"2026-09-01T10:00:03.000Z","attachment":{"type":"mcp_instructions_delta","addedNames":["plugin:sre:grafana-prod"],"addedBlocks":["INSTR1"]}}`,
+		`{"type":"attachment","sessionId":"s0","timestamp":"2026-09-01T10:00:04.000Z","attachment":{"type":"skill_listing","names":["jest-testing"],"content":"- jest-testing: run tests"}}`,
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.jsonl"),
+		[]byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestMergeSilentOnRentRows is the merge half of the join's honesty gate:
+// rent_bytes and skill_calls are tools-only metric names, so merge() must
+// union them silently — a disagreement warning on a row only one command
+// emits would be a false alarm. The row-existence assertions are what make
+// this test RED on a pre-join tree: no rent rows, no silence to check.
+func TestMergeSilentOnRentRows(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no sqlite3: the corpus is the only input
+	rep, err := BuildReport(rentReportCorpus(t), "test", Window{}, nil)
+	if err != nil {
+		t.Fatalf("BuildReport: %v", err)
+	}
+	metricValue(t, rep.Envelope, "rent_bytes", "mcp_server", "plugin_sre_grafana-prod")
+	metricValue(t, rep.Envelope, "rent_bytes", "skill", "jest-testing")
+	metricValue(t, rep.Envelope, "skill_calls", "skill", "jest-testing")
+	for _, w := range rep.Envelope.Warnings {
+		if strings.Contains(w, "rent_bytes") || strings.Contains(w, "skill_calls") {
+			t.Errorf("merge must stay silent on the new rows: %v", w)
+		}
+	}
+}
+
 // TestReportSurfacesDisagreement is the honesty gate on the merge. Two
 // commands measuring the same thing must agree; when they do not, the artifact
 // says so rather than quietly reporting whichever ran first.

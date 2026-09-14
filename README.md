@@ -191,6 +191,10 @@ mis-split a contrived name (a server literally named `plugin_notion` under a
 plugin called `my`), but every byte still lands in some plugin bucket or in
 unresolved.
 
+The `RENT` column (`rent_bytes` in `--json`) is bytes the thing costs just by
+being installed — MCP instructions, skill listings; a blank rent means it was
+never listed, and `calls=0` beside rent means installed and never called.
+
 That output is one live run. `~/.claude/projects` grows while you read it, so
 your own numbers will differ — see [Reproducibility](#reproducibility).
 

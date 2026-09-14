@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -662,6 +663,178 @@ func TestAbsentModelsCollapse(t *testing.T) {
 	}
 	if n := strings.Count(absent[0], "haiku-bg"); n != 1 {
 		t.Errorf("a model billed in two sessions must be named once, named %d times: %q", n, absent[0])
+	}
+}
+
+// coverageFixture is three responses over one session: two claimed by named
+// skills, one claiming nothing. Re-billed tokens 400/200/600 make every share
+// simple arithmetic the envelope itself states.
+func coverageFixture(t *testing.T) Envelope {
+	t.Helper()
+	const model = "claude-opus-5"
+	return attributeCorpus(t,
+		usageLine(t, "s1", "msg_1", model,
+			tokens{in: 100, out: 20, read: 400}, map[string]string{"attributionSkill": "alpha"}),
+		usageLine(t, "s1", "msg_2", model,
+			tokens{in: 100, out: 20, read: 200}, map[string]string{"attributionSkill": "beta"}),
+		usageLine(t, "s1", "msg_3", model,
+			tokens{in: 100, out: 20, read: 600}, nil),
+	)
+}
+
+// dimResponses reads one dimension's response counts off the envelope, keyed
+// by row key. The floor row, when present, is found under unattributedKey.
+func dimResponses(env Envelope, dimension string) map[string]int64 {
+	out := map[string]int64{}
+	for _, m := range env.Metrics {
+		if m.Dimension == dimension && m.Name == "responses" {
+			out[m.Key] = asInt64(m.Value)
+		}
+	}
+	return out
+}
+
+// TestRebillCoverageAnnotation pins the coverage line under the rebill table.
+// The floor row is the confidence bound on the whole table — the skill says
+// read it first — but a table that renders the floor as just another ranked
+// row buries the bound it exists to state. The annotation says it out loud.
+//
+// Its figures are computed from rows already in the envelope, never
+// hardcoded, and it is a rendered sentence, never a metric row
+// (TestValidateRejects: derived facts live in warnings and footers). The line
+// carries no tabs — a tab-terminated first cell joins the column block above
+// it and stretches column 0 to the width of the whole sentence.
+func TestRebillCoverageAnnotation(t *testing.T) {
+	const dimension = "attribution_skill"
+	env := coverageFixture(t)
+	var buf strings.Builder
+	if err := RenderAttribute(&buf, env, 15); err != nil {
+		t.Fatalf("RenderAttribute: %v", err)
+	}
+
+	// Expected figures come from the envelope, not from this file: the same
+	// rows the table printed are the rows the annotation must summarize.
+	responses := dimResponses(env, dimension)
+	unattr, hasFloor := responses[unattributedKey]
+	if !hasFloor || unattr == 0 {
+		t.Fatalf("fixture has no (unattributed) responses — coverage cannot be exercised: %v", responses)
+	}
+	var total int64
+	for _, n := range responses {
+		total += n
+	}
+	wantUnattr := percent(unattr, total)
+	wantNamed := 100 - wantUnattr
+
+	var found bool
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if !strings.HasPrefix(line, dimension+":") {
+			continue
+		}
+		found = true
+		if strings.Contains(line, "\t") {
+			t.Errorf("annotation line carries a tab (tabwriter rule): %q", line)
+		}
+		var gotUnattr, gotNamed float64
+		format := dimension + ": %f%% of turns carry no attribution field — named shares rank within the remaining %f%%"
+		if _, err := fmt.Sscanf(line, format, &gotUnattr, &gotNamed); err != nil {
+			t.Fatalf("annotation line malformed: %q (%v)", line, err)
+		}
+		if math.Abs(gotUnattr-wantUnattr) > 0.05 {
+			t.Errorf("annotation says %.1f%% unattributed, envelope says %.1f%% (%d of %d)",
+				gotUnattr, wantUnattr, unattr, total)
+		}
+		if math.Abs(gotNamed-wantNamed) > 0.05 {
+			t.Errorf("annotation says remaining %.1f%%, envelope says %.1f%%", gotNamed, wantNamed)
+		}
+	}
+	if !found {
+		t.Fatalf("no coverage annotation under the %s table:\n%s", dimension, buf.String())
+	}
+}
+
+// TestRebillShareExcludesFloor pins the ranking rule: named shares rank
+// within the ATTRIBUTED re-billed tokens only, and the (unattributed) row
+// stays the unranked floor — no share of its own, while its measured columns
+// keep rendering. The old denominator (the whole dimension, floor included)
+// made every named share understate its own slice: 40% of the attributed
+// tokens printed as 33.3%, and the floor out-ranked the rows it bounds.
+func TestRebillShareExcludesFloor(t *testing.T) {
+	const dimension = "attribution_skill"
+	env := coverageFixture(t)
+	var buf strings.Builder
+	if err := RenderAttribute(&buf, env, 15); err != nil {
+		t.Fatalf("RenderAttribute: %v", err)
+	}
+
+	// The denominator the named shares must rank within: attributed
+	// rebilled_tokens, floor excluded.
+	var attributed int64
+	for _, m := range env.Metrics {
+		if m.Dimension == dimension && m.Name == "rebilled_tokens" && m.Key != unattributedKey {
+			attributed += asInt64(m.Value)
+		}
+	}
+	if attributed == 0 {
+		t.Fatal("fixture carries no attributed rebilled tokens")
+	}
+	expected := map[string]float64{}
+	for _, m := range env.Metrics {
+		if m.Dimension == dimension && m.Name == "rebilled_tokens" && m.Key != unattributedKey {
+			expected[m.Key] = percent(asInt64(m.Value), attributed)
+		}
+	}
+
+	named := 0
+	var sum float64
+	floorSeen := false
+	for _, line := range strings.Split(buf.String(), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		key := fields[0]
+		_, isNamed := expected[key]
+		if !isNamed && key != unattributedKey {
+			continue // headers, corpus rows, neighbouring tables
+		}
+		if key == unattributedKey {
+			floorSeen = true
+			// The floor is unranked: no share cell and no grade after its
+			// measured columns. It stays visible — the floor must render.
+			if len(fields) >= 7 {
+				t.Errorf("(unattributed) row renders a share %q — the floor is unranked: %q", fields[6], line)
+			}
+			for j, col := range []string{"responses", "fresh", "rebilled", "multiplier", "usd"} {
+				if fields[1+j] == "" {
+					t.Errorf("(unattributed) row's %s cell is blank: %q", col, line)
+				}
+			}
+			continue
+		}
+		named++
+		if len(fields) < 7 {
+			t.Errorf("named row %s renders no share: %q", key, line)
+			continue
+		}
+		got, err := strconv.ParseFloat(strings.TrimSuffix(fields[6], "%"), 64)
+		if err != nil {
+			t.Fatalf("named row %s share %q is not a percent: %q", key, fields[6], line)
+		}
+		if math.Abs(got-expected[key]) > 0.05 {
+			t.Errorf("row %s share = %.1f%%, want %.1f%% (attributed %d, its rebilled %d)",
+				key, got, expected[key], attributed, asInt64(mustMetric(t, env, "rebilled_tokens", dimension, key).Value))
+		}
+		sum += got
+	}
+	if !floorSeen {
+		t.Fatal("no (unattributed) row rendered — the floor must stay visible")
+	}
+	if named != len(expected) {
+		t.Fatalf("parsed %d named rows, want %d", named, len(expected))
+	}
+	if math.Abs(sum-100) > 0.05 {
+		t.Errorf("named shares sum to %.1f%%, want ≈100%% of attributed tokens (floor excluded)", sum)
 	}
 }
 

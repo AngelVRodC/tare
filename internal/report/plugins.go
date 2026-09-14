@@ -78,6 +78,25 @@ func pluginServer(segment string, names []string) string {
 	return ""
 }
 
+// rentSegment normalizes an mcp_instructions rent key to the call side's
+// segment spelling. Colon form plugin:<plugin>:<server> becomes
+// plugin_<plugin>_<server> when <plugin> is a configured name (longest-first
+// match, non-empty server remainder — pluginServer's guard); everything else
+// passes through VERBATIM. ok reports colon-form-AND-matched; the caller uses
+// plugin only then. pluginNames is the single authority; no new config source.
+func rentSegment(key string, names []string) (segment, plugin string, ok bool) {
+	rest, isColon := strings.CutPrefix(key, "plugin:")
+	if !isColon {
+		return key, "", false
+	}
+	for _, p := range names {
+		if s, found := strings.CutPrefix(rest, p+":"); found && s != "" {
+			return "plugin_" + p + "_" + s, p, true
+		}
+	}
+	return key, "", false
+}
+
 // pluginRollup rewrites segment-keyed buckets (`plugin_<plugin>_<server>`,
 // already bucketed in the scan loop) into plugin-keyed buckets. Segments
 // without the `plugin_` prefix are plain MCP servers and are skipped — they

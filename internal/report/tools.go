@@ -2,6 +2,7 @@ package report
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
@@ -51,6 +52,13 @@ func ToolsEnvelope(dir, version string, w Window) (Envelope, error) {
 	pluginSegments := map[string]*toolStat{}
 	answered := map[string]bool{}
 	usesInWindow := map[string]bool{}
+	// Rent (attachment bytes an installed thing costs just by existing) and
+	// skill invocations live in their own flat maps: groupRows merges rows
+	// sharing Dimension+Key at render time, so a separate metric name is the
+	// whole join mechanism — toolStat is deliberately not extended.
+	mcpRentRaw := map[string]int64{}
+	skillRent := map[string]int64{}
+	skillCalls := map[string]*int64{}
 
 	var useBlocks, resultBlocks, unmatched int64
 	var extResults, extProduced, extContext int64
@@ -68,6 +76,34 @@ func ToolsEnvelope(dir, version string, w Window) (Envelope, error) {
 			if inWin {
 				usesInWindow[u.ID] = true
 				useBlocks++
+				// Only Skill uses are decoded — one decode per Skill
+				// invocation, zero cost for every other tool. Malformed or
+				// empty input counts nowhere and stays quiet (unknown fails
+				// quietly); a denied Skill call is still an invocation.
+				if u.Name == "Skill" {
+					var in struct {
+						Skill string `json:"skill"`
+					}
+					if json.Unmarshal(u.Input, &in) == nil && in.Skill != "" {
+						*bucket(skillCalls, in.Skill)++
+					}
+				}
+			}
+		}
+		// Rent accumulates BEFORE the results early-return: attachment
+		// events carry no tool_result blocks, so placed after that guard it
+		// would silently never accumulate. Window-gated like bucket() so
+		// the rent/calls join stays coherent under --since/--until.
+		if at := ev.Attachment(); at != nil && inWin {
+			switch at.KeyDimension {
+			case transcript.DimMcpServer:
+				for k, n := range at.KeyBytes {
+					mcpRentRaw[k] += n
+				}
+			case transcript.DimSkill:
+				for k, n := range at.KeyBytes {
+					skillRent[k] += n
+				}
 			}
 		}
 		if len(results) == 0 {
@@ -184,11 +220,26 @@ func ToolsEnvelope(dir, version string, w Window) (Envelope, error) {
 	// unreadable authority omits the whole dimension with one warning —
 	// absent is not zero.
 	pluginResolved := map[string]*toolStat{}
+	mcpRent := mcpRentRaw // authority unavailable: rent stays verbatim
+	pluginRent := map[string]int64{}
 	if path, pathErr := pluginSettingsPath(); pathErr != nil {
 		b.warn("plugin rollup unavailable: %v — plugin rows omitted, not zeroed", pathErr)
 	} else if names, err := pluginNames(path); err != nil {
 		b.warn("plugin rollup unavailable: %v — plugin rows omitted, not zeroed", err)
 	} else {
+		// Rent keys normalize here, where the names authority is already in
+		// scope: colon form joins the call-side segment and its bytes also
+		// land on the plugin dim under the plugin name (server rent is not
+		// re-counted there). Unmatched and free-form keys pass verbatim —
+		// never dropped, never zeroed. Skill rent needs no normalization.
+		mcpRent = make(map[string]int64, len(mcpRentRaw))
+		for raw, n := range mcpRentRaw {
+			seg, plugin, ok := rentSegment(raw, names)
+			mcpRent[seg] += n
+			if ok {
+				pluginRent[plugin] += n
+			}
+		}
 		resolved, unresolvedKeys := pluginRollup(pluginSegments, names)
 		pluginResolved = resolved
 		if len(unresolvedKeys) > 0 {
@@ -199,6 +250,33 @@ func ToolsEnvelope(dir, version string, w Window) (Envelope, error) {
 	b.rows(statMetrics("tool", tools)...)
 	b.rows(statMetrics("mcp_server", servers)...)
 	b.rows(statMetrics("plugin", pluginResolved)...)
+	// Honest-zero stat rows come after the called rows, rent-desc among
+	// themselves: called keys never move, and a rent-only entity's zero is
+	// a counted fact (the counter streamed the whole corpus).
+	b.rows(zeroStatMetrics("mcp_server", rentOnlyKeys(mcpRent, servers))...)
+	b.rows(zeroStatMetrics("plugin", rentOnlyKeys(pluginRent, pluginResolved))...)
+	b.rows(rentMetrics("mcp_server", mcpRent)...)
+	b.rows(rentMetrics("skill", skillRent)...)
+	b.rows(rentMetrics("plugin", pluginRent)...)
+	// skill_calls covers the union of rent keys and called skill keys, in
+	// one sorted order; groupRows preserves first-seen order, so the
+	// rendered skill table is rent-desc with no second sort.
+	both := map[string]bool{}
+	for k := range skillRent {
+		both[k] = true
+	}
+	for k := range skillCalls {
+		both[k] = true
+	}
+	for _, k := range slices.SortedFunc(maps.Keys(both), func(a, b string) int {
+		return cmp.Or(cmp.Compare(skillRent[b], skillRent[a]), strings.Compare(a, b))
+	}) {
+		calls := int64(0)
+		if p := skillCalls[k]; p != nil {
+			calls = *p
+		}
+		b.rows(MeasuredMetric("skill_calls", "skill", k, calls, "calls"))
+	}
 	return b.done(scanStats), nil
 }
 
@@ -253,6 +331,56 @@ func statMetrics(dimension string, stats map[string]*toolStat, omit ...string) [
 	return out
 }
 
+// rentMetrics emits one rent_bytes row per key, heaviest rent first, so the
+// table can group consecutive rows without re-sorting what the envelope
+// already ordered. Emitted from a declared sorted slice, never a map range —
+// the reproducibility gate (TestReportReproducible) depends on it.
+func rentMetrics(dimension string, rent map[string]int64) []Metric {
+	keys := slices.SortedFunc(maps.Keys(rent), func(a, b string) int {
+		return cmp.Or(
+			cmp.Compare(rent[b], rent[a]),
+			strings.Compare(a, b))
+	})
+	out := make([]Metric, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, MeasuredMetric("rent_bytes", dimension, k, rent[k], "bytes"))
+	}
+	return out
+}
+
+// rentOnlyKeys lists a rent map's keys that carry no call-side stat row, in
+// the same rent-desc order the honest-zero rows are appended in.
+func rentOnlyKeys(rent map[string]int64, called map[string]*toolStat) []string {
+	var out []string
+	for k := range rent {
+		if _, ok := called[k]; !ok {
+			out = append(out, k)
+		}
+	}
+	slices.SortFunc(out, func(a, b string) int {
+		return cmp.Or(
+			cmp.Compare(rent[b], rent[a]),
+			strings.Compare(a, b))
+	})
+	return out
+}
+
+// zeroStatMetrics emits the five measured-zero rows of a rent-only entity.
+// A full stat row, not a lone calls=0, keeps the SHARE column coherent —
+// 0.0% against a real zero context instead of a blank cell against a share.
+func zeroStatMetrics(dimension string, keys []string) []Metric {
+	out := make([]Metric, 0, len(keys)*5)
+	for _, k := range keys {
+		out = append(out,
+			MeasuredMetric("calls", dimension, k, int64(0), "calls"),
+			MeasuredMetric("context_bytes", dimension, k, int64(0), "bytes"),
+			MeasuredMetric("image_bytes", dimension, k, int64(0), "bytes"),
+			MeasuredMetric("produced_bytes", dimension, k, int64(0), "bytes"),
+			MeasuredMetric("errors", dimension, k, int64(0), "calls"))
+	}
+	return out
+}
+
 // RenderTools prints the envelope as a table. Like RenderScan it reads only
 // the envelope, so the table and `--json` can never report different numbers.
 func RenderTools(w io.Writer, env Envelope) error {
@@ -269,16 +397,29 @@ func RenderTools(w io.Writer, env Envelope) error {
 		if len(rows) == 0 {
 			continue
 		}
-		fmt.Fprintf(tw, "\n%s\tCALLS\tCONTEXT\tIMAGES\tPRODUCED\tERRORS\tSHARE\t\n", strings.ToUpper(dim))
+		// RENT renders on all three tables uniformly, blank where the
+		// envelope carries no rent row — the renderer never sniffs the
+		// envelope for whether rent exists (OpenCode's blank column is the
+		// same absent-is-not-zero vocabulary as every other blank cell).
+		fmt.Fprintf(tw, "\n%s\tCALLS\tCONTEXT\tRENT\tIMAGES\tPRODUCED\tERRORS\tSHARE\t\n", strings.ToUpper(dim))
 		for _, r := range rows {
 			pct, grade := r.share("context_bytes", context)
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
 				r.cell("calls"),
 				r.cell("context_bytes"),
+				r.cell("rent_bytes"),
 				r.cell("image_bytes"),
 				r.cell("produced_bytes"),
 				r.cell("errors"),
 				pct, grade)
+		}
+	}
+	// The skill table joins rent with invocations on one row. No truncation:
+	// RenderTools never truncates, and --json carries every row.
+	if rows := groupRows(env.Metrics, transcript.DimSkill); len(rows) > 0 {
+		fmt.Fprintf(tw, "\nSKILL\tRENT\tCALLS\t\n")
+		for _, r := range rows {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t\n", r.key, r.cell("rent_bytes"), r.cell("skill_calls"))
 		}
 	}
 	return renderTail(w, tw, env)

@@ -156,6 +156,14 @@ zero dependencies or it argues against itself.
   renders an omitted metric as a blank cell. Emitting `0` would be a `measured` claim that
   `Envelope.Validate` waves through — that is the whole failure mode. `statMetrics(dimension,
   stats, omit ...string)` leaves a row out; `dropUnknownErrors` leaves a per-key row out.
+  The rent-vs-use join adds the one sanctioned exception: calls=0 on a rent-only row is an
+  honest measured zero (the call counter streamed the whole corpus); rent on a
+  called-but-never-listed entity stays absent.
+- **Compaction is measured as absent, not modeled.** Claude Code transcripts carry no compact
+  marker the parse layer can see — compact_boundary, isCompactSummary and compactMetadata all
+  counted zero across the corpus (2026-09-13). The rent-vs-use change closed the question as a
+  decision record: no compact feature, no metric, and any future work starts by re-measuring
+  the corpus, not the docs.
 - **Two SQLite traps, both of which produce a wrong number rather than an error.**
   - **Bytes.** A byte figure read through `sqlite3` must use `length(CAST(x AS BLOB))`. Bare
     `length()` counts **characters** for a text value and the result gets labelled bytes —

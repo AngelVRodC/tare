@@ -555,8 +555,17 @@ func writeRebillTable(tw io.Writer, env Envelope, dimension string, top int) {
 		return
 	}
 	fmt.Fprintf(tw, "\n%s\tRESPONSES\tFRESH\tREBILLED\tMULTIPLIER\tUSD (est)\tSHARE\t\n", strings.ToUpper(dimension))
-	rebilled := corpusValue(env, "rebilled_tokens")
 	shown, total := truncate(rows, top)
+	// The SHARE denominator is the attributed re-billed tokens: the
+	// (unattributed) row is silence, not a competitor, so it is excluded from
+	// the ranking and carries no share of its own — the floor stays a floor.
+	// Integer sums over a declared slice are order-independent (TestReportReproducible).
+	attributed := int64(0)
+	for _, r := range rows {
+		if r.key != unattributedKey {
+			attributed += r.num("rebilled_tokens")
+		}
+	}
 	for _, r := range shown {
 		// A session with no cost-state has no cost_usd row at all. It says
 		// "unavailable" and never "0.00" — the difference is the finding.
@@ -564,7 +573,10 @@ func writeRebillTable(tw io.Writer, env Envelope, dimension string, top int) {
 		if _, ok := r.values["cost_usd"]; ok {
 			usd = r.cell("cost_usd")
 		}
-		pct, grade := r.share("rebilled_tokens", rebilled)
+		pct, grade := "", ""
+		if r.key != unattributedKey {
+			pct, grade = r.share("rebilled_tokens", attributed)
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.key,
 			r.cell("responses"),
 			r.cell("fresh_tokens"),
@@ -572,7 +584,36 @@ func writeRebillTable(tw io.Writer, env Envelope, dimension string, top int) {
 			r.cell("rebill_multiplier"),
 			usd, pct, grade)
 	}
+	writeCoverage(tw, rows, dimension)
 	writeTruncation(tw, len(shown), total, dimension)
+}
+
+// writeCoverage states the table's confidence bound under it, in the same
+// writeTruncation style: a sentence, never a metric row (TestValidateRejects
+// rejects a derived fact dressed as a second metric row). The floor row is
+// the bound — how many turns no field claimed — and named shares rank within
+// the rest, which is what the line tells the reader so the SHARE column's
+// denominator needs no reverse-engineering.
+//
+// Quiet when there is no floor row: nothing went unclaimed, so there is no
+// bound to state. It carries no tabs on purpose, for the same tabwriter rule
+// writeTruncation documents.
+func writeCoverage(tw io.Writer, rows []row, dimension string) {
+	var total, unattr int64
+	hasFloor := false
+	for _, r := range rows {
+		responses := r.num("responses")
+		total += responses
+		if r.key == unattributedKey {
+			unattr, hasFloor = responses, true
+		}
+	}
+	if !hasFloor || total == 0 {
+		return
+	}
+	unattrPct := percent(unattr, total)
+	fmt.Fprintf(tw, "%s: %.1f%% of turns carry no attribution field — named shares rank within the remaining %.1f%%\n",
+		dimension, unattrPct, 100-unattrPct)
 }
 
 // truncate caps a table at top rows and reports the true total, not the

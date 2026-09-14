@@ -100,6 +100,47 @@ func TestPluginServer(t *testing.T) {
 	}
 }
 
+// TestRentSegmentCutsColonForm pins the rent-side normalization: a colon-form
+// rent key `plugin:<plugin>:<server>` whose plugin segment a configured name
+// claims becomes the call side's `plugin_<plugin>_<server>` segment spelling,
+// so the rent key joins the call row. Names arrive sorted longest-first from
+// pluginNames — the first hit is the split the comparator chose. The empty
+// server remainder passes through verbatim (pluginServer's guard).
+func TestRentSegmentCutsColonForm(t *testing.T) {
+	names := []string{"engram-x", "engram"} // as pluginNames sorts them, longest-first
+	segment, plugin, ok := rentSegment("plugin:engram-x:cache", names)
+	if segment != "plugin_engram-x_cache" || plugin != "engram-x" || !ok {
+		t.Errorf("rentSegment matched = (%q, %q, %v), want (plugin_engram-x_cache, engram-x, true)", segment, plugin, ok)
+	}
+	segment, plugin, ok = rentSegment("plugin:engram:engram", names)
+	if segment != "plugin_engram_engram" || plugin != "engram" || !ok {
+		t.Errorf("rentSegment matched = (%q, %q, %v), want (plugin_engram_engram, engram, true)", segment, plugin, ok)
+	}
+	segment, plugin, ok = rentSegment("plugin:p:", []string{"p"})
+	if segment != "plugin:p:" || plugin != "" || ok {
+		t.Errorf("rentSegment empty server = (%q, %q, %v), want verbatim (\"plugin:p:\", \"\", false)", segment, plugin, ok)
+	}
+}
+
+// TestRentSegmentPassesThrough pins everything that must NOT be rewritten:
+// a bare key has no `plugin:` prefix, a colon key no name claims, and a
+// free-form key (spaces, not a segment at all) must never join — all three
+// return verbatim with ok=false, rent-only rows that are never dropped,
+// never zeroed.
+func TestRentSegmentPassesThrough(t *testing.T) {
+	cases := []struct{ key string }{
+		{"codegraph"},          // bare MCP server, no plugin: prefix
+		{"plugin:unknown:srv"}, // colon form, but no configured name claims it
+		{"claude.ai Notion"},   // free-form key, never a segment
+	}
+	for _, tc := range cases {
+		segment, plugin, ok := rentSegment(tc.key, []string{"engram"})
+		if segment != tc.key || plugin != "" || ok {
+			t.Errorf("rentSegment(%q) = (%q, %q, %v), want verbatim (%q, \"\", false)", tc.key, segment, plugin, ok, tc.key)
+		}
+	}
+}
+
 // TestPluginRollup pins the post-scan resolution: segment buckets are summed
 // into plugin buckets by integer addition (order-independent, so
 // TestReportReproducible-safe), plain MCP segments are skipped, and whatever

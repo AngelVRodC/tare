@@ -38,9 +38,14 @@ func truncationMarker(s string) string {
 }
 
 // ToolUse is a `tool_use` content block: the model asking for a tool.
+//
+// Input is the block's raw `input` object, carried undecoded: the only caller
+// that reads it is the Skill-invocation counter, which decodes just the Skill
+// uses — a RawMessage costs nothing on the hot path for every other tool.
 type ToolUse struct {
-	ID   string
-	Name string
+	ID    string
+	Name  string
+	Input json.RawMessage `json:"input"`
 }
 
 // ToolResult is a `tool_result` content block: the answer that came back.
@@ -72,12 +77,13 @@ func (ev *Event) Blocks() (uses []ToolUse, results []ToolResult) {
 	}
 	var msg struct {
 		Content []struct {
-			Type      string       `json:"type"`
-			ID        string       `json:"id"`
-			Name      string       `json:"name"`
-			ToolUseID string       `json:"tool_use_id"`
-			Content   contentBytes `json:"content"`
-			IsError   bool         `json:"is_error"`
+			Type      string          `json:"type"`
+			ID        string          `json:"id"`
+			Name      string          `json:"name"`
+			Input     json.RawMessage `json:"input"`
+			ToolUseID string          `json:"tool_use_id"`
+			Content   contentBytes    `json:"content"`
+			IsError   bool            `json:"is_error"`
 		} `json:"content"`
 	}
 	if json.Unmarshal(ev.Message, &msg) != nil {
@@ -86,7 +92,7 @@ func (ev *Event) Blocks() (uses []ToolUse, results []ToolResult) {
 	for _, b := range msg.Content {
 		switch b.Type {
 		case "tool_use":
-			uses = append(uses, ToolUse{ID: b.ID, Name: b.Name})
+			uses = append(uses, ToolUse{ID: b.ID, Name: b.Name, Input: b.Input})
 		case "tool_result":
 			results = append(results, ToolResult{
 				ToolUseID:        b.ToolUseID,

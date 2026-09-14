@@ -151,10 +151,10 @@ Bytes produced into side files          2.1 MB
 Context bytes those results still cost  85.8 kB
 all rows measured
 
-TOOL                                                        CALLS  CONTEXT   IMAGES  PRODUCED  ERRORS  SHARE
-Bash                                                        9,149  17.9 MB   0 B     20.0 MB   262     48.5%  ***
-Read                                                        1,406  12.6 MB   2.3 MB  15.0 MB   15      34.2%  **
-mcp__plugin_sre_grafana-prod__query_loki_logs               644    1.9 MB    0 B     1.9 MB    26      5.0%   *
+TOOL                                                        CALLS  CONTEXT   RENT  IMAGES  PRODUCED  ERRORS  SHARE
+Bash                                                        9,149  17.9 MB         0 B     20.0 MB   262     48.5%  ***
+Read                                                        1,406  12.6 MB         2.3 MB  15.0 MB   15      34.2%  **
+mcp__plugin_sre_grafana-prod__query_loki_logs               644    1.9 MB          0 B     1.9 MB    26      5.0%   *
 ```
 
 Then `tare attribute` for the same volume rolled up by skill, plugin, agent and
@@ -260,29 +260,29 @@ Bytes returned into context   189.6 kB
 Calls that returned an error  1
 all rows measured
 
-TOOL                         CALLS  CONTEXT   IMAGES  PRODUCED  ERRORS  SHARE
-read                         24     103.5 kB                    0       54.6%  !!
-webfetch                     2      37.2 kB                     0       19.6%  *
-bash                         21     20.6 kB                     0       10.9%  *
-context7_query-docs          2      9.8 kB                      0       5.1%   *
-task                         5      6.9 kB                      1       3.7%
-engram_mem_search            6      3.2 kB                      0       1.7%
-context7_resolve-library-id  1      1.8 kB                      0       1.0%
-engram_mem_save              5      1.4 kB                      0       0.8%
-glob                         2      1.4 kB                      0       0.7%
-question                     3      1.4 kB                      0       0.7%
-engram_mem_context           1      585 B                       0       0.3%
-engram_mem_current_project   2      471 B                       0       0.2%
-engram_mem_session_summary   2      347 B                       0       0.2%
-write                        13     312 B                       0       0.2%
-grep                         1      274 B                       0       0.1%
-engram_mem_save_prompt       1      234 B                       0       0.1%
-engram_mem_review            1      130 B                       0       0.1%
-edit                         2      52 B                        0       0.0%
+TOOL                         CALLS  CONTEXT   RENT  IMAGES  PRODUCED  ERRORS  SHARE
+read                         24     103.5 kB        0 B     54.6%  !!
+webfetch                     2      37.2 kB         0 B     19.6%  *
+bash                         21     20.6 kB         0 B     10.9%  *
+context7_query-docs          2      9.8 kB          0 B     5.1%   *
+task                         5      6.9 kB          1       3.7%
+engram_mem_search            6      3.2 kB          0       1.7%
+context7_resolve-library-id  1      1.8 kB          0       1.0%
+engram_mem_save              5      1.4 kB          0       0.8%
+glob                         2      1.4 kB          0       0.7%
+question                     3      1.4 kB          0       0.7%
+engram_mem_context           1      585 B           0       0.3%
+engram_mem_current_project   2      471 B           0       0.2%
+engram_mem_session_summary   2      347 B           0       0.2%
+write                        13     312 B           0       0.2%
+grep                         1      274 B           0       0.1%
+engram_mem_save_prompt       1      234 B           0       0.1%
+engram_mem_review            1      130 B           0       0.1%
+edit                         2      52 B            0       0.0%
 
-MCP_SERVER  CALLS  CONTEXT  IMAGES  PRODUCED  ERRORS  SHARE
-context7    3      11.6 kB                    0       6.1%   *
-engram      18     6.4 kB                     0       3.4%
+MCP_SERVER  CALLS  CONTEXT  RENT      IMAGES  PRODUCED  ERRORS  SHARE
+context7    3      11.6 kB            0       6.1%   *
+engram      18     6.4 kB             0       3.4%
 
 warning: image_bytes and image_results are not reported for opencode: it stores a tool result as one output string with no image payload broken out, so the figure is unmeasured — it is not a measurement of zero
 warning: produced_bytes, externalised_results, externalised_produced_bytes and externalised_context_bytes are not reported for opencode: it records no pre-truncation output size and writes no side files, so what a tool produced before it reached the context is unmeasured — it is not a measurement of zero

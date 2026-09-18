@@ -1,6 +1,6 @@
 // Command tare reports which installed tooling actually costs context, read
-// from local agent transcripts — Claude Code by default, OpenCode behind
-// `tools --harness opencode`. Zero dependencies, no network.
+// from local agent transcripts — Claude Code by default, OpenCode and Codex
+// via tools --harness. Zero dependencies, no network.
 package main
 
 import (
@@ -27,11 +27,12 @@ var version = "0.4.0"
 // handed, and `tare report` hands them nothing at all.
 const defaultTop = 15
 
-// The harnesses --harness accepts. Two values are not a registry: each names a
-// reader that already exists, and neither is reachable through an interface.
+// The harnesses --harness accepts. These values are not a registry: each names a
+// reader that already exists, and none is reached through an interface.
 const (
 	harnessClaudeCode = "claude-code"
 	harnessOpenCode   = "opencode"
+	harnessCodex      = "codex"
 )
 
 func main() {
@@ -78,11 +79,11 @@ func run(args []string, out io.Writer) error {
 	untilFlag := fs.String("until", "", "window end: bare date or full UTC RFC3339")
 	// Registered only where it means something, so `tare scan --harness
 	// opencode` is an error rather than a flag that silently does nothing:
-	// `tools` is the one command a second harness supplies.
+	// `tools` is the command the additional harnesses supply.
 	harness := harnessClaudeCode
 	if cmd == "tools" {
 		fs.StringVar(&harness, "harness", harnessClaudeCode,
-			"which harness's transcripts to read: "+harnessClaudeCode+" or "+harnessOpenCode)
+			"which harness's transcripts to read: "+harnessClaudeCode+", "+harnessOpenCode+" or "+harnessCodex)
 	}
 	// Same rule as --harness: registered only on the two commands whose
 	// tables are capped, so `tare scan --all` and `tare report --top 3` are
@@ -136,11 +137,13 @@ func run(args []string, out io.Writer) error {
 		}
 		return report.RenderScan(out, env)
 	case "tools":
-		// Both adapters return the same envelope for the same command name, so
+		// All adapters return the same envelope for the same command name, so
 		// only the reader differs — RenderTools and WriteJSON are shared.
 		toolsEnvelope := report.ToolsEnvelope
 		if harness == harnessOpenCode {
 			toolsEnvelope = report.OpenCodeToolsEnvelope
+		} else if harness == harnessCodex {
+			toolsEnvelope = report.CodexToolsEnvelope
 		}
 		env, err := toolsEnvelope(dir, version, w)
 		if err != nil {
@@ -245,11 +248,17 @@ func resolveDir(harness, dir string) (string, error) {
 		byHarness = underHome(".claude", "projects")
 	case harnessOpenCode:
 		byHarness = underHome(".local", "share", "opencode")
+	case harnessCodex:
+		codexHome := os.Getenv("CODEX_HOME")
+		if codexHome == "" {
+			codexHome = underHome(".codex")
+		}
+		byHarness = filepath.Join(codexHome, "sessions")
 	default:
-		return "", fmt.Errorf("unknown --harness %q: valid values are %s and %s",
-			harness, harnessClaudeCode, harnessOpenCode)
+		return "", fmt.Errorf("unknown --harness %q: valid values are %s, %s and %s",
+			harness, harnessClaudeCode, harnessOpenCode, harnessCodex)
 	}
-	// An explicit --dir wins over both defaults, and is validated by whichever
+	// An explicit --dir wins over harness defaults, and is validated by whichever
 	// reader gets handed it rather than here.
 	if dir != "" {
 		return dir, nil
@@ -274,9 +283,9 @@ flags (given alone):
   --version  print the version and exit
 
 flags (given after the command):
-  --dir string   transcript root (default ~/.claude/projects; ~/.local/share/opencode with --harness opencode)
+  --dir string   transcript root (default ~/.claude/projects; ~/.local/share/opencode for opencode; $CODEX_HOME/sessions or ~/.codex/sessions for codex)
   --json         emit the JSON envelope instead of a table
-  --harness NAME tools only: which harness to read, claude-code (default) or opencode
+  --harness NAME tools only: which harness to read, claude-code (default), opencode or codex
   --since BOUND  window start: bare date YYYY-MM-DD or full UTC RFC3339 YYYY-MM-DDTHH:MM:SS.sssZ
   --until BOUND  window end: same shapes; a bare date includes the whole named day
   --top N        attribute, corruption only: rows per dimension (default 15, 0 for every row)

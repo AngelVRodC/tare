@@ -2,9 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/AngelVRodC/tare/internal/report"
 )
 
 // TestHelpExitsZeroOnStdout pins the most universal CLI convention there is:
@@ -23,6 +27,51 @@ func TestHelpExitsZeroOnStdout(t *testing.T) {
 			first = buf.String()
 		} else if buf.String() != first {
 			t.Errorf("run(%q) printed different text than --help", spelling)
+		}
+	}
+}
+
+func TestCodexCLIPathsAndOutput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CODEX_HOME", "")
+	if got, err := resolveDir(harnessCodex, ""); err != nil || got != filepath.Join(os.Getenv("HOME"), ".codex", "sessions") {
+		t.Fatalf("default Codex root = %q, %v", got, err)
+	}
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	dir := filepath.Join(codexHome, "sessions")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"timestamp":"2026-09-18T10:00:00.000Z","type":"session_meta","payload":{"id":"s"}}
+{"timestamp":"2026-09-18T10:00:00.000Z","type":"response_item","payload":{"type":"function_call","call_id":"c","name":"read"}}
+{"timestamp":"2026-09-18T10:00:00.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c","output":"hello"}}`
+	if err := os.WriteFile(filepath.Join(dir, "rollout.jsonl"), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, flags := range [][]string{
+		{"--json"},
+		{"--json", "--dir", dir, "--since", "2026-09-18", "--until", "2026-09-18"},
+	} {
+		var out bytes.Buffer
+		if err := run(append([]string{"tools", "--harness", "codex"}, flags...), &out); err != nil {
+			t.Fatal(err)
+		}
+		var env report.Envelope
+		if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+			t.Fatal(err)
+		}
+		if env.Command != "tools" || env.Corpus.Dir != dir || env.Corpus.Files != 1 {
+			t.Fatalf("wrong Codex envelope: %+v", env)
+		}
+	}
+	var out bytes.Buffer
+	if err := run([]string{"tools", "--harness", "codex"}, &out); err != nil || !strings.Contains(out.String(), "5 B") {
+		t.Fatalf("table: %v\n%s", err, out.String())
+	}
+	for _, cmd := range []string{"scan", "attribute", "corruption", "report"} {
+		if err := run([]string{cmd, "--harness", "codex"}, &out); err == nil || !strings.Contains(err.Error(), "not defined") {
+			t.Errorf("unsupported %s --harness codex: %v", cmd, err)
 		}
 	}
 }
@@ -120,7 +169,7 @@ func TestPerCommandHelpAlsoExitsZero(t *testing.T) {
 }
 
 // TestHarnessFlagRejectedOnOtherCommands is the same scoping rule read from the
-// other side: `tools` is the one command a second harness supplies, so naming it
+// other side: `tools` is the command the additional harnesses supply, so naming it
 // anywhere else has to be an error rather than a flag that reads Claude Code
 // and says nothing.
 //
@@ -144,16 +193,14 @@ func TestHarnessFlagRejectedOnOtherCommands(t *testing.T) {
 }
 
 // TestUnknownHarnessErrors pins that a misspelling is rejected before any
-// corpus is read, and that the message names what would have worked. `codex` is
-// the case that matters: it is a real harness tare does not read yet, so the
-// error has to say which two it does.
+// corpus is read, and that the message names all supported values.
 func TestUnknownHarnessErrors(t *testing.T) {
 	var buf bytes.Buffer
-	err := run([]string{"tools", "--harness", "codex"}, &buf)
+	err := run([]string{"tools", "--harness", "unknown"}, &buf)
 	if err == nil {
-		t.Fatal("run([tools --harness codex]) returned nil, want an error")
+		t.Fatal("run([tools --harness unknown]) returned nil, want an error")
 	}
-	for _, want := range []string{harnessClaudeCode, harnessOpenCode} {
+	for _, want := range []string{harnessClaudeCode, harnessOpenCode, harnessCodex} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error is %q, want it to name the valid value %q", err, want)
 		}
@@ -181,16 +228,16 @@ func TestDefaultDirPerHarness(t *testing.T) {
 		}
 	}
 
-	// An explicit --dir wins over both defaults, which is what every QA run
+	// An explicit --dir wins over harness defaults, which is what every QA run
 	// against a frozen corpus copy depends on.
-	for _, harness := range []string{harnessClaudeCode, harnessOpenCode} {
+	for _, harness := range []string{harnessClaudeCode, harnessOpenCode, harnessCodex} {
 		got, err := resolveDir(harness, "/somewhere/else")
 		if err != nil || got != "/somewhere/else" {
 			t.Errorf("resolveDir(%q, /somewhere/else) = %q, %v — want the flag to win", harness, got, err)
 		}
 	}
 
-	if _, err := resolveDir("codex", "/somewhere/else"); err == nil {
+	if _, err := resolveDir("unknown", "/somewhere/else"); err == nil {
 		t.Error("resolveDir rejected nothing for an unknown harness with --dir set")
 	}
 }

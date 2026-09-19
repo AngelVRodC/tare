@@ -95,12 +95,14 @@ func TestTruncationFlagsAreScoped(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err := run([]string{"attribute", "--top", "-1"}, &buf)
-	if err == nil {
-		t.Fatal("run([attribute --top -1]) returned nil, want an error")
-	}
-	if !strings.Contains(err.Error(), "--top needs 0 or more rows") {
-		t.Errorf("error is %q, want it to say what a valid --top is", err)
+	for _, cmd := range []string{"attribute", "corruption", "failures"} {
+		err := run([]string{cmd, "--top", "-1"}, &buf)
+		if err == nil {
+			t.Fatalf("run([%s --top -1]) returned nil, want an error", cmd)
+		}
+		if !strings.Contains(err.Error(), "--top needs 0 or more rows") {
+			t.Errorf("error is %q, want it to say what a valid --top is", err)
+		}
 	}
 }
 
@@ -108,7 +110,7 @@ func TestTruncationFlagsAreScoped(t *testing.T) {
 // pass missed: flag reports --help as an error, so `tare scan --help` exited 1
 // to stderr while `tare --help` exited 0 to stdout.
 func TestPerCommandHelpAlsoExitsZero(t *testing.T) {
-	for _, args := range [][]string{{"scan", "--help"}, {"tools", "-h"}, {"corruption", "--help"}} {
+	for _, args := range [][]string{{"scan", "--help"}, {"tools", "-h"}, {"corruption", "--help"}, {"failures", "--help"}} {
 		var buf bytes.Buffer
 		if err := run(args, &buf); err != nil {
 			t.Errorf("run(%v) returned %v, want nil", args, err)
@@ -130,7 +132,7 @@ func TestPerCommandHelpAlsoExitsZero(t *testing.T) {
 // bare nil-check would then pass on a machine without OpenCode installed and
 // fail to catch the mutation on one that has it.
 func TestHarnessFlagRejectedOnOtherCommands(t *testing.T) {
-	for _, cmd := range []string{"scan", "attribute", "corruption", "report"} {
+	for _, cmd := range []string{"scan", "attribute", "corruption", "failures", "report"} {
 		var buf bytes.Buffer
 		err := run([]string{cmd, "--harness", "opencode"}, &buf)
 		if err == nil {

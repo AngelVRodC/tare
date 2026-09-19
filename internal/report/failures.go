@@ -7,9 +7,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/AngelVRodC/tare/internal/transcript"
 )
@@ -389,4 +391,76 @@ func payloadHash(raw json.RawMessage) string {
 	}
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:])[:hashLen]
+}
+
+// RenderFailures prints the envelope as a table. Like every other renderer it
+// reads only the envelope, so the table and `--json` cannot disagree.
+//
+// top caps the two ranked pattern tables the way RenderCorruption caps the
+// tool table; zero or less prints every row. The attribution rollups print in
+// full: their rows are bounded by installed tooling, not by calls, and the
+// same short list is the suspect set — cutting it hides the small-name
+// failures the table exists to surface.
+//
+// Absence is the message: a block with no rows prints no table at all, and
+// the summary line fires only when every *pattern* table is empty. An empty
+// attribution table never triggers it — the envelope's own warning already
+// says whether those tables are unavailable or empty, and patterns can stand
+// on their own without a field to blame.
+//
+// Row order comes straight from the envelope: FailuresEnvelope sorted each
+// dimension by a total order, so re-sorting here could only ever disagree
+// with `--json`.
+func RenderFailures(w io.Writer, env Envelope, top int) error {
+	renderHeader(w, env)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	// Three padding cells: the widest table below is six columns.
+	writeCorpus(tw, env, "\t\t\t")
+
+	loops := groupRows(env.Metrics, "retry_loop")
+	if len(loops) > 0 {
+		// ERRORS is the streak length and DENIED its denied share — the
+		// same subset relation the corruption tool table prints. The key
+		// already names session/tool/payload-hash; there is no timestamp in
+		// the envelope to print, and inventing a column for one would be a
+		// claim the join never made.
+		fmt.Fprint(tw, "\nRETRY_LOOP\tERRORS\tDENIED\t\t\t\n")
+		shown, total := truncate(loops, top)
+		for _, r := range shown {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t\t\t\n", r.key,
+				r.cell("consecutive_errors"), r.cell("consecutive_denials"))
+		}
+		writeTruncation(tw, len(shown), total, "retry_loop")
+	}
+
+	pairs := groupRows(env.Metrics, "repeated_failure")
+	if len(pairs) > 0 {
+		fmt.Fprint(tw, "\nREPEATED_FAILURE\tCALLS\tERRORS\tFAILED\tDENIED\tSESSIONS\t\n")
+		shown, total := truncate(pairs, top)
+		for _, r := range shown {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t\n", r.key,
+				r.cell("calls"), r.cell("errors"), r.cell("failures"),
+				r.cell("denied"), r.cell("error_sessions"))
+		}
+		writeTruncation(tw, len(shown), total, "repeated_failure")
+	}
+
+	if len(loops) == 0 && len(pairs) == 0 {
+		// No tabs: this line sits in the column block and a tab here would
+		// stretch a column to its width — the trailing-annotation trap.
+		fmt.Fprint(tw, "\nno failure patterns detected\n")
+	}
+
+	for _, d := range failuresDims {
+		rows := groupRows(env.Metrics, d.name)
+		if len(rows) == 0 {
+			continue
+		}
+		fmt.Fprintf(tw, "\n%s\tERRORS\tFAILED\tDENIED\t\t\n", strings.ToUpper(d.name))
+		for _, r := range rows {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t\t\n", r.key,
+				r.cell("errors"), r.cell("failures"), r.cell("denied"))
+		}
+	}
+	return renderTail(w, tw, env)
 }

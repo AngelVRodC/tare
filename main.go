@@ -84,12 +84,12 @@ func run(args []string, out io.Writer) error {
 		fs.StringVar(&harness, "harness", harnessClaudeCode,
 			"which harness's transcripts to read: "+harnessClaudeCode+" or "+harnessOpenCode)
 	}
-	// Same rule as --harness: registered only on the two commands whose
+	// Same rule as --harness: registered only on the three commands whose
 	// tables are capped, so `tare scan --all` and `tare report --top 3` are
 	// errors rather than flags that silently do nothing.
 	var all bool
 	top := defaultTop
-	if cmd == "attribute" || cmd == "corruption" {
+	if cmd == "attribute" || cmd == "corruption" || cmd == "failures" {
 		fs.BoolVar(&all, "all", false, "print every row of every table, not just the top --top")
 		fs.IntVar(&top, "top", defaultTop, "rows per dimension in the tables; 0 prints every row")
 	}
@@ -168,13 +168,25 @@ func run(args []string, out io.Writer) error {
 			return report.WriteJSON(out, env)
 		}
 		return report.RenderCorruption(out, env, top)
+	case "failures":
+		// Claude Code transcripts only, like corruption: the patterns are
+		// read off joined is_error results and the attribution fields of the
+		// turns that made them, and OpenCode records neither.
+		env, err := report.FailuresEnvelope(dir, version, w)
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return report.WriteJSON(out, env)
+		}
+		return report.RenderFailures(out, env, top)
 	case "report":
 		// Four passes over a quarter-gigabyte corpus take about four seconds
 		// with nothing printed, which reads as a hang. One line per pass to
 		// stderr fixes that without ever touching the artifact on stdout, so
 		// `> out.md` still yields a file that is only the report while the
 		// terminal shows progress. Gated on stderr being that terminal, so a
-		// piped or captured stderr stays silent. The other four commands
+		// piped or captured stderr stays silent. The other five commands
 		// finish fast enough to need none.
 		var progress io.Writer
 		if isTTY() {
@@ -267,6 +279,7 @@ commands:
   tools      per-tool call counts and context bytes; errors and produced bytes where recorded; per-plugin rollup
   attribute  tokens by skill/plugin/agent/MCP, context re-billing, attachment volume
   corruption per-tool error, empty and truncation rates, and the markers tools wrote
+  failures   retry loops and the same call failing across sessions, and the tooling they cluster on
   report     all four composed into one reproducible artifact (Markdown, or --json)
 
 flags (given alone):
@@ -279,7 +292,7 @@ flags (given after the command):
   --harness NAME tools only: which harness to read, claude-code (default) or opencode
   --since BOUND  window start: bare date YYYY-MM-DD or full UTC RFC3339 YYYY-MM-DDTHH:MM:SS.sssZ
   --until BOUND  window end: same shapes; a bare date includes the whole named day
-  --top N        attribute, corruption only: rows per dimension (default 15, 0 for every row)
-  --all          attribute, corruption only: same as --top 0
+  --top N        attribute, corruption, failures only: rows per dimension (default 15, 0 for every row)
+  --all          attribute, corruption, failures only: same as --top 0
 `)
 }

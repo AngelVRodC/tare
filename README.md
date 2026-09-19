@@ -211,6 +211,7 @@ Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
 | `tare tools` | What each tool cost — calls and context bytes in; errors and produced bytes where recorded | `--harness` |
 | `tare attribute` | Which skill / plugin / agent / MCP server the tokens belong to, and how much prior context was re-billed | `--top`, `--all` |
 | `tare corruption` | What share of calls failed, how many the harness denied instead, and what returned nothing or carried a truncation marker | `--top`, `--all` |
+| `tare failures` | Whether the same call keeps failing — a ≥3-error loop in one session, or one payload erroring across sessions — rolled up by the skill / plugin / MCP server of the turns that made it; policy denials are split out of the failure counts exactly as in `corruption`, but a denial still feeds the patterns | `--top`, `--all` |
 | `tare report` | All four, composed into one reproducible artifact | — |
 
 | Flag given alone | Effect |
@@ -226,17 +227,19 @@ Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
 `--harness` is `tools` only: which harness to read, claude-code (default) or
 opencode. Registered there and nowhere else, so `tare scan --harness opencode`
 is an error rather than a flag that silently does nothing. `scan`, `attribute`,
-`corruption` and `report` read Claude Code and nothing else. See
+`corruption`, `failures` and `report` read Claude Code and nothing else. See
 [OpenCode](#opencode) for what the second reader can and cannot measure.
 
 `--top N` sets how many rows each dimension prints — 15 by default, `0` for all
 of them — and `--all` is `--top 0` under another name. A table that was cut says
 so and names the flag: `showing top 15 of 67 skill rows — use --all`. Both are
-registered on `attribute` and `corruption` only, for the same reason
+registered on `attribute`, `corruption` and `failures` only, for the same reason
 `--harness` is registered on `tools` only: `scan` and `tools` print every row
 already, and the Markdown `tare report` never truncates at all — a file is not
 a terminal, and `--all` is not spellable after the fact by whoever reads the
-file.
+file. On `failures` the cap cuts the two ranked pattern tables; the attribution
+tables print in full, because their rows are bounded by installed tooling, not
+by calls.
 
 `tare report` writes the artifact: Markdown for a reader, `--json` for a
 machine. Both are self-contained — the header records the tool version, the
@@ -515,8 +518,8 @@ its corpus by 30.
 | `command not found: tare`, or `fish: Unknown command: tare` | The binary exists but the directory `go install` wrote it to is not on PATH, and `go install` prints nothing either way. See [Putting tare on your PATH](#putting-tare-on-your-path). |
 | `tare: no command given` | A subcommand is required. `tare` with no arguments prints the list. |
 | `tare: flags go after the command` | Exactly that: `tare scan --json`, not `tare --json scan`. |
-| `tare: unknown command "tool"` | Not a subcommand. `tare --help` prints the five that are. |
-| `tare: flag provided but not defined: -all` | `--all` and `--top` are registered on `attribute` and `corruption` only — the two commands whose tables are capped. |
+| `tare: unknown command "tool"` | Not a subcommand. `tare --help` prints the list of those that are. |
+| `tare: flag provided but not defined: -all` | `--all` and `--top` are registered on `attribute`, `corruption` and `failures` only — the three commands whose tables are capped. |
 | `tare: --top needs 0 or more rows` | `--top` counts rows. `0` means every row, which is what `--all` asks for. |
 | `files 0` and an empty date range | `--dir` is not a transcript root. It should contain per-project subdirectories of `*.jsonl`. |
 | Two runs disagree | The corpus is live. Copy it and point `--dir` at the copy — see [Reproducibility](#reproducibility). |
@@ -587,8 +590,9 @@ Every command it prescribes parses against `usage()`:
 | Where are the empty and truncated tool results? | `tare corruption --all` |
 
 Flags go after the command. `--harness` exists on `tools` only; `--top N` and
-`--all` exist on `attribute` and `corruption` only. The skill never hardcodes a
-percentage: shares change with your corpus, so it reads them from your run.
+`--all` exist on `attribute`, `corruption` and `failures` only. The skill never
+hardcodes a percentage: shares change with your corpus, so it reads them from
+your run.
 
 ## Contributing
 

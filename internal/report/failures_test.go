@@ -558,3 +558,178 @@ func TestFailuresEnvelopeContractAndDeterminism(t *testing.T) {
 		}
 	}
 }
+
+// failureFixtureEnv builds the envelope the renderer tests below assert on,
+// the same way the FD-1 fixtures do: a temp corpus, no window, no PATH.
+func failureFixtureEnv(t *testing.T, lines ...string) Envelope {
+	t.Helper()
+	t.Setenv("PATH", t.TempDir())
+	dir := toolCorpus(t, lines...)
+	env, err := FailuresEnvelope(dir, "test", Window{})
+	if err != nil {
+		t.Fatalf("FailuresEnvelope: %v", err)
+	}
+	return env
+}
+
+// TestRenderFailuresReadsEnvelope pins the table to the envelope: every block
+// the fixture corpus produces renders with its header, its key and no summary
+// line over rows that exist.
+func TestRenderFailuresReadsEnvelope(t *testing.T) {
+	lines := failingLoop("s1", "a", "Bash", cmdLS, "", 3)
+	lines = append(lines,
+		useIn(tsAt(40), "s2", "p1", "Read", cmdPathX1, `"attributionSkill":"golang-cli",`),
+		errRes(tsAt(41), "s2", "p1", ""),
+		useIn(tsAt(42), "s3", "p2", "Read", cmdPathX1, `"attributionSkill":"golang-cli",`),
+		errRes(tsAt(43), "s3", "p2", ""),
+	)
+	env := failureFixtureEnv(t, lines...)
+	var buf bytes.Buffer
+	if err := RenderFailures(&buf, env, 15); err != nil {
+		t.Fatalf("RenderFailures: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"CORPUS", "RETRY_LOOP", loopKey("s1", "Bash", cmdLS),
+		"REPEATED_FAILURE", pairKey("Read", cmdPathX1),
+		"ATTRIBUTION_SKILL", "golang-cli",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table is missing %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "no failure patterns detected") {
+		t.Errorf("the summary line printed over a corpus that has patterns:\n%s", out)
+	}
+}
+
+// TestRenderFailuresEmptyPatterns is the blank-safety rule: a block with no
+// rows prints no table, and the one summary line fires exactly when the
+// pattern tables are all empty — including alongside an attribution table,
+// because "no patterns" is true and the attribution rows are not patterns.
+func TestRenderFailuresEmptyPatterns(t *testing.T) {
+	t.Run("clean corpus", func(t *testing.T) {
+		env := failureFixtureEnv(t,
+			useIn(tsAt(1), "s1", "t1", "Bash", cmdLS, ""), okRes(tsAt(2), "s1", "t1"))
+		var buf bytes.Buffer
+		if err := RenderFailures(&buf, env, 15); err != nil {
+			t.Fatalf("RenderFailures: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "no failure patterns detected") {
+			t.Errorf("a corpus with no patterns must say so:\n%s", out)
+		}
+		for _, absent := range []string{"RETRY_LOOP", "REPEATED_FAILURE", "ATTRIBUTION_"} {
+			if strings.Contains(out, absent) {
+				t.Errorf("%s table printed on a clean corpus:\n%s", absent, out)
+			}
+		}
+	})
+
+	t.Run("attribution without patterns", func(t *testing.T) {
+		// Two errored calls on one triple in one session: under the loop bar
+		// (3) and the pair bar (2 sessions), but the attribution rollup has
+		// no pattern threshold — it counts errored calls, so it prints.
+		env := failureFixtureEnv(t,
+			useIn(tsAt(1), "s1", "q1", "Bash", cmdLS, `"attributionSkill":"golang-cli",`),
+			errRes(tsAt(2), "s1", "q1", ""),
+			useIn(tsAt(3), "s1", "q2", "Bash", cmdLS, `"attributionSkill":"golang-cli",`),
+			errRes(tsAt(4), "s1", "q2", ""),
+		)
+		var buf bytes.Buffer
+		if err := RenderFailures(&buf, env, 15); err != nil {
+			t.Fatalf("RenderFailures: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "no failure patterns detected") {
+			t.Errorf("empty pattern tables must print the summary even beside attribution:\n%s", out)
+		}
+		for _, want := range []string{"ATTRIBUTION_SKILL", "golang-cli"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("table is missing %q\n%s", want, out)
+			}
+		}
+		for _, absent := range []string{"RETRY_LOOP", "REPEATED_FAILURE"} {
+			if strings.Contains(out, absent) {
+				t.Errorf("%s table printed below both bars:\n%s", absent, out)
+			}
+		}
+	})
+}
+
+// TestRenderFailuresTopTruncatesPatternTables pins the terminal-only cap and
+// the annotation rule: the cut names its escape hatch, carries no tabs, and
+// `--top 0` (what --all sets) prints every row and says nothing about cuts.
+func TestRenderFailuresTopTruncatesPatternTables(t *testing.T) {
+	inputs := []string{`{"path":"a"}`, `{"path":"b"}`, `{"path":"c"}`, `{"path":"d"}`}
+	var lines []string
+	for i, in := range inputs {
+		lines = append(lines, failingLoop(fmt.Sprintf("s%d", i), fmt.Sprintf("p%d", i), "Read", in, "", 3)...)
+	}
+	env := failureFixtureEnv(t, lines...)
+
+	var buf bytes.Buffer
+	if err := RenderFailures(&buf, env, 2); err != nil {
+		t.Fatalf("RenderFailures: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "showing top 2 of 4 retry_loop rows — use --all") {
+		t.Errorf("the cut table must name its escape hatch:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "showing top") && strings.Contains(line, "\t") {
+			t.Errorf("the truncation annotation carries tabs and would stretch a column: %q", line)
+		}
+	}
+	// Equal streaks sort by key ascending, so s0 and s1 survive and s2 does not.
+	for _, want := range []string{loopKey("s0", "Read", inputs[0]), loopKey("s1", "Read", inputs[1])} {
+		if !strings.Contains(out, want) {
+			t.Errorf("top-2 print is missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, loopKey("s2", "Read", inputs[2])) {
+		t.Errorf("top-2 print leaked a cut row:\n%s", out)
+	}
+
+	buf.Reset()
+	if err := RenderFailures(&buf, env, 0); err != nil {
+		t.Fatalf("RenderFailures: %v", err)
+	}
+	out = buf.String()
+	if strings.Contains(out, "use --all") {
+		t.Errorf("a full print must not claim a cut:\n%s", out)
+	}
+	for i, in := range inputs {
+		if !strings.Contains(out, loopKey(fmt.Sprintf("s%d", i), "Read", in)) {
+			t.Errorf("--top 0 is missing loop %d:\n%s", i, out)
+		}
+	}
+}
+
+// TestFailuresJSONRoundTripsThroughValidate covers the `--json` path the CLI
+// shares with the table: encoded, decoded back into the same shape, the
+// envelope still passes the contract and still carries every row the table
+// ranked — so the two faces cannot disagree about what exists.
+func TestFailuresJSONRoundTripsThroughValidate(t *testing.T) {
+	env := failureFixtureEnv(t, failingLoop("s1", "a", "Bash", cmdLS, "", 3)...)
+	var buf bytes.Buffer
+	if err := WriteJSON(&buf, env); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+	var back Envelope
+	if err := json.Unmarshal(buf.Bytes(), &back); err != nil {
+		t.Fatalf("decoded envelope: %v", err)
+	}
+	if err := back.Validate(); err != nil {
+		t.Errorf("decoded Validate: %v", err)
+	}
+	if back.Command != "failures" {
+		t.Errorf("decoded command = %q, want failures", back.Command)
+	}
+	if len(back.Metrics) != len(env.Metrics) {
+		t.Errorf("decoded %d metrics, envelope has %d", len(back.Metrics), len(env.Metrics))
+	}
+	if got, want := len(dimRows(back, "retry_loop")), len(dimRows(env, "retry_loop")); got != want {
+		t.Errorf("decoded retry_loop rows = %d, want %d", got, want)
+	}
+}

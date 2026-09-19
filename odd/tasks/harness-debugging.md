@@ -91,10 +91,18 @@ No SDD artifacts. One bounded writer per task.
 ## Progress / evidence
 
 - 2026-09-19: scope authorized (all three, failures first). Branch created.
-- Research sources: Argus (rule analyzer on ~/.claude/projects JSONL),
-  AgentDebugX (arXiv:2607.18754), claudelab MCP troubleshooting guide,
-  modelcontextprotocol.io debugging docs, jeremylongshore plugin troubleshooting wiki.
+- FD-1 done — commit `f70cd3b` (1052 lines, 3 files). Checks: build/vet/gofmt/
+  `go test ./...` green (writer + parent spot-check), `go list -m all` = 1.
+  Review: assessed `medium` (slice_budget_reached) → consent granted →
+  `review-reliability` capture refused twice by the OpenCode review transport
+  (`opencode_review_transport_binding_invalid`, session root == repo root).
+  Reported as one occurrence comment on gentle-ai#4030 (canonical open tracker,
+  reproductions through 3.4.0 stable); comment `#issuecomment-5744957636`.
+  Resolved via the exact candidate-scoped decline (`declined_this_candidate`).
+  **FD-1 review outcome: unavailable (provider defect) — no PASS claimed.**
+  Review boundary for the next commit: `main` (this candidate burned
+  unreviewed-by-defect, not reviewed).
 
 ## Next step
 
-Delegate FD-1 to one bounded writer with corruption.go/blocks.go context.
+Confirm chain strategy (running count 1052 > 400), then delegate FD-2.

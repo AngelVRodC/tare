@@ -73,7 +73,7 @@ No SDD artifacts. One bounded writer per task.
       into nothing else (no `report` merge — deferred). Docs: README + AGENTS.md
       command list. Checks: build/vet/test/gofmt + manual run vs frozen corpus copy.
       Route: delegated writer. Commit: `feat: wire the failures command into the CLI`
-- [ ] DR-1 — `tare doctor` core: `internal/report/doctor.go` — STATIC config
+- [x] DR-1 — `tare doctor` core: `internal/report/doctor.go` — STATIC config
       health only: validate plugin.json / skill SKILL.md frontmatter (name/kebab,
       parseable allowed-tools), MCP server configs from settings.json/.mcp.json,
       flag configured command binaries missing from PATH. Read-only;
@@ -120,7 +120,17 @@ No SDD artifacts. One bounded writer per task.
   Until #4030 ships a fix, every granted review on this runtime wedges; the
   user owns `gentle-ai review mode enable|disable` if they want that ceremony
   paused. Review boundary: still `main`, both slices declined-by-defect.
+- DR-1 done — commit `cf308b9` (doctor.go + doctor_test.go, static config
+  health: skills frontmatter / plugin manifests / MCP server configs,
+  `exec.LookPath` on commands). Writer ran all five checks green; parent
+  spot-checked `-run Doctor` green; gofmt clean. mem_save from the worker hit
+  the ambiguous-session error (two workers hit it; parent mirrors via CLI).
+  Review: assessed `high` (starts other processes) → consent granted →
+  all four canonical lenses refused before execution with the same #4030
+  error (third lineage, full 4-lens reproduction) → third occurrence comment
+  (`#issuecomment-5745476921`) → exact candidate-scoped decline.
+  **DR-1 review outcome: unavailable (provider defect) — no PASS claimed.**
 
 ## Next step
 
-Delegate DR-1 (static config health envelope) to one bounded writer.
+Delegate DR-2 (doctor cross-join + CLI wiring + docs).

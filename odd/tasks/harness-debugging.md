@@ -20,8 +20,17 @@ LLM driving the CLI — consistent with tare's "names no third-party tool" rule.
 ## Authorized scope (user chose: all three slices, failures first)
 
 1. `tare failures` — transcript pattern detection + attribution (slices FD-1, FD-2).
-2. `tare doctor` — read-only harness config health checks (DR-1, DR-2).
+2. `tare doctor` — read-only harness config health checks (DR-1, DR-2, DR-3).
 3. Skill upgrade — Detect→Attribute→Propose loop in the tare skill (SK-1).
+
+Harness scope (user clarification 2026-09-19): the feature serves BOTH Claude
+Code and OpenCode. `failures` rides the Claude Code transcript corpus (like
+scan/attribute/corruption); `doctor` covers both harnesses via `--harness`,
+following the `tools` precedent: two same-signature envelope functions chosen by
+dispatch, no adapter interface. Claude Code's user/project MCP store
+(`~/.claude.json`) is folded into DR-2 (measured 2026-09-19: 4 top-level
+`mcpServers`, 37 project entries — without it, the join is inverted on real
+machines); OpenCode's config + DB adapter is DR-3.
 
 Out of scope unless re-authorized: modifying existing commands' behavior, new
 dependencies, network access, fixing the user's harness itself.
@@ -81,8 +90,18 @@ No SDD artifacts. One bounded writer per task.
       configured-but-never-seen cross-join moved to DR-2. Checks as FD-1.
       Route: delegated writer. Commit: `feat: validate harness configuration in a new doctor envelope`
 - [ ] DR-2 — `tare doctor` cross-join (servers configured but absent from the
-      corpus window), CLI wiring + renderer + docs. Checks as FD-2.
-      Route: delegated writer. Commit: `feat: wire the doctor command into the CLI`
+      corpus window), CLI wiring + renderer + docs. Includes the `~/.claude.json`
+      fix (user-scope + project-scope `mcpServers`) surfaced by the live smoke.
+      Checks as FD-2. Route: delegated writer. Commit: `feat: wire the doctor command into the CLI`
+- [ ] DR-3 — `tare doctor` OpenCode adapter: `--harness opencode` — validate
+      `mcp` blocks in `~/.config/opencode/opencode.json` + project
+      `opencode.json` (server names matched longest-first like `openCodeServer`),
+      cross-join configured vs observed from the OpenCode DB (sqlite3 binary,
+      same snapshot discipline as opencode.go), and reuse the SKILL.md
+      frontmatter checks over `~/.config/opencode/skills` plus the project skill
+      roots OpenCode reads. Plugin checks stay Claude-only: the OpenCode run
+      omits that block + warns (absent ≠ zero). Checks as DR-1.
+      Route: delegated writer. Commit: `feat: teach the doctor to read the opencode harness`
 - [ ] SK-1 — `.agents/skills/tare/SKILL.md`: add the failure-diagnosis loop
       (run `failures` → attribute → `doctor` → propose harness fix; judgment
       stays with the agent). Checks: frontmatter valid, `opencode debug skill`

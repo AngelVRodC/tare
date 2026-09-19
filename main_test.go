@@ -85,8 +85,8 @@ func TestLeadingFlagSaysOrder(t *testing.T) {
 // a quarter of a gigabyte to render nothing.
 func TestTruncationFlagsAreScoped(t *testing.T) {
 	for _, args := range [][]string{
-		{"scan", "--all"}, {"tools", "--all"}, {"report", "--all"},
-		{"scan", "--top", "3"}, {"report", "--top", "3"},
+		{"scan", "--all"}, {"tools", "--all"}, {"report", "--all"}, {"doctor", "--all"},
+		{"scan", "--top", "3"}, {"report", "--top", "3"}, {"doctor", "--top", "3"},
 	} {
 		var buf bytes.Buffer
 		if err := run(args, &buf); err == nil {
@@ -110,7 +110,7 @@ func TestTruncationFlagsAreScoped(t *testing.T) {
 // pass missed: flag reports --help as an error, so `tare scan --help` exited 1
 // to stderr while `tare --help` exited 0 to stdout.
 func TestPerCommandHelpAlsoExitsZero(t *testing.T) {
-	for _, args := range [][]string{{"scan", "--help"}, {"tools", "-h"}, {"corruption", "--help"}, {"failures", "--help"}} {
+	for _, args := range [][]string{{"scan", "--help"}, {"tools", "-h"}, {"corruption", "--help"}, {"failures", "--help"}, {"doctor", "--help"}} {
 		var buf bytes.Buffer
 		if err := run(args, &buf); err != nil {
 			t.Errorf("run(%v) returned %v, want nil", args, err)
@@ -132,7 +132,7 @@ func TestPerCommandHelpAlsoExitsZero(t *testing.T) {
 // bare nil-check would then pass on a machine without OpenCode installed and
 // fail to catch the mutation on one that has it.
 func TestHarnessFlagRejectedOnOtherCommands(t *testing.T) {
-	for _, cmd := range []string{"scan", "attribute", "corruption", "failures", "report"} {
+	for _, cmd := range []string{"scan", "attribute", "corruption", "failures", "doctor", "report"} {
 		var buf bytes.Buffer
 		err := run([]string{cmd, "--harness", "opencode"}, &buf)
 		if err == nil {
@@ -201,7 +201,7 @@ func TestDefaultDirPerHarness(t *testing.T) {
 // registered globally, like --dir/--json, so no command rejects them as an
 // unknown flag. Over an empty dir every command must succeed with a window set.
 func TestSinceUntilAcceptedOnAllCommands(t *testing.T) {
-	for _, cmd := range []string{"scan", "tools", "attribute", "corruption", "report"} {
+	for _, cmd := range []string{"scan", "tools", "attribute", "corruption", "report", "doctor"} {
 		var buf bytes.Buffer
 		err := run([]string{cmd, "--dir", t.TempDir(), "--since", "2026-08-01", "--until", "2026-08-15"}, &buf)
 		if err != nil {

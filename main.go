@@ -180,6 +180,29 @@ func run(args []string, out io.Writer) error {
 			return report.WriteJSON(out, env)
 		}
 		return report.RenderFailures(out, env, top)
+	case "doctor":
+		// Claude Code transcripts and Claude Code config, like failures: the
+		// join reads mcp__ tool names and attributionMcpServer, and the
+		// static checks read the layouts only Claude Code writes. The config
+		// roots are fixed — underHome(".claude") and the working directory;
+		// --dir points at the transcript corpus the join streams, never at
+		// config. Unreadable config roots degrade to omitted blocks and
+		// warnings (DR-1's posture); a missing corpus dir is fatal like the
+		// other corpus commands. No --top/--all: the tables are bounded by
+		// the config surface, not by calls, and capping a config table
+		// hides the finding the command exists to surface.
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		env, err := report.DoctorJoinEnvelope(underHome(".claude"), cwd, dir, version, w)
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return report.WriteJSON(out, env)
+		}
+		return report.RenderDoctor(out, env)
 	case "report":
 		// Four passes over a quarter-gigabyte corpus take about four seconds
 		// with nothing printed, which reads as a hang. One line per pass to
@@ -280,6 +303,7 @@ commands:
   attribute  tokens by skill/plugin/agent/MCP, context re-billing, attachment volume
   corruption per-tool error, empty and truncation rates, and the markers tools wrote
   failures   retry loops and the same call failing across sessions, and the tooling they cluster on
+  doctor     config health: static skill/plugin/MCP checks, and servers configured but never seen in the transcripts
   report     all four composed into one reproducible artifact (Markdown, or --json)
 
 flags (given alone):

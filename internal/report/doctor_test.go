@@ -74,6 +74,20 @@ func doctorEnvWindow(t *testing.T, claudeRoot, projectDir string, w Window) Enve
 	return env
 }
 
+// doctorJoinEnv is doctorEnvWindow's joined twin: the same free contract
+// check, plus the transcript corpus the join streams.
+func doctorJoinEnv(t *testing.T, claudeRoot, projectDir, corpusDir string, w Window) Envelope {
+	t.Helper()
+	env, err := DoctorJoinEnvelope(claudeRoot, projectDir, corpusDir, "test", w)
+	if err != nil {
+		t.Fatalf("DoctorJoinEnvelope: %v", err)
+	}
+	if err := env.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	return env
+}
+
 func doctorWarnText(env Envelope) string { return strings.Join(env.Warnings, "\n") }
 
 const doctorGoodSkill = "---\nname: %s\ndescription: A fixture skill.\nallowed-tools: Read, Bash(go:*), WebFetch\n---\n\n# body\n"
@@ -484,4 +498,425 @@ func TestDoctorJSONRoundTripsThroughValidate(t *testing.T) {
 	if got, want := len(dimRows(back, "skill")), 1; got != want {
 		t.Errorf("decoded skill rows = %d, want %d", got, want)
 	}
+}
+
+// The DR-2 join fixtures mirror the failures ones: session ids and tool names
+// are all the observation needs (mcp__<server>__<tool> or an
+// attributionMcpServer value), so results stay out unless a test reads them.
+
+// TestDoctorJoinNeverAndUnconfigured is the join's headline case: a clean
+// server configured and never called earns never_observed against the
+// session denominator; the ghost in a tool name and the server named only by
+// an attribution field are both observed-but-unconfigured misses.
+func TestDoctorJoinNeverAndUnconfigured(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	doctorWrite(t, filepath.Join(claudeRoot, "settings.json"),
+		`{"mcpServers":{"unused_server":{"command":"`+doctorBinName+`"}}}`)
+	corpus := toolCorpus(t,
+		useIn(tsAt(1), "s1", "u1", "mcp__ghost__ping", cmdLS, ""),
+		useIn(tsAt(2), "s2", "u2", "Bash", cmdLS, `"attributionMcpServer":"attrd",`),
+	)
+	env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+
+	if got := metricValue(t, env, doctorMCPSessions, "corpus", ""); got != int64(2) {
+		t.Errorf("mcp_sessions = %v, want 2", got)
+	}
+	// never_observed's value is the denominator: two mcp-using sessions
+	// named nothing of this server.
+	if got := metricValue(t, env, doctorNeverObserved, "mcp_server", "unused_server"); got != int64(2) {
+		t.Errorf("never_observed/unused_server = %v, want 2", got)
+	}
+	if got := metricValue(t, env, doctorUnconfiguredObserved, "mcp_server", "ghost"); got != int64(1) {
+		t.Errorf("unconfigured_observed/ghost = %v, want 1", got)
+	}
+	if got := metricValue(t, env, doctorUnconfiguredObserved, "mcp_server", "attrd"); got != int64(1) {
+		t.Errorf("unconfigured_observed/attrd = %v, want 1 — the attribution field is an observation", got)
+	}
+	if got := metricOrNil(env, doctorNeverObserved, "mcp_server", "ghost"); got != nil {
+		t.Errorf("an observed server earned never_observed: %v", got)
+	}
+	if got := metricOrNil(env, doctorUnconfiguredObserved, "mcp_server", "unused_server"); got != nil {
+		t.Errorf("a configured server earned unconfigured_observed: %v", got)
+	}
+	for _, m := range dimRows(env, "mcp_server") {
+		if m.Name == "findings" {
+			t.Errorf("a clean config emitted a findings row into the join dimension: %+v", m)
+		}
+		if m.Derivation != Measured {
+			t.Errorf("join row %s/%s is %s, want measured", m.Name, m.Key, m.Derivation)
+		}
+	}
+	w := doctorWarnText(env)
+	for _, want := range []string{
+		`mcp_server "unused_server": configured but never seen in the corpus — 2 session(s)`,
+		"absence here is not a claim the server is broken",
+		`mcp_server "ghost": observed in the corpus (1 mcp-using session(s))`,
+		`mcp_server "attrd": observed in the corpus`,
+	} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warn text is missing %q:\n%s", want, w)
+		}
+	}
+}
+
+// TestDoctorJoinWindowFiltersSessions pins that the corpus scan respects
+// --since: sessions entirely outside the window leave the denominator, the
+// rows' values and the observed set, while every static row stays
+// point-in-time beside the warning that says so.
+func TestDoctorJoinWindowFiltersSessions(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	doctorWrite(t, filepath.Join(claudeRoot, "settings.json"),
+		`{"mcpServers":{"unused_server":{"command":"`+doctorBinName+`"}}}`)
+	doctorSkill(t, filepath.Join(claudeRoot, "skills"), "ok", strings.ReplaceAll(doctorGoodSkill, "%s", "ok"))
+	corpus := toolCorpus(t,
+		useIn("2026-08-10T10:00:00.000Z", "s-old", "u1", "mcp__ghost__ping", cmdLS, ""),
+		useIn("2026-09-10T10:00:00.000Z", "s-new", "u2", "mcp__ghost__ping", cmdLS, ""),
+	)
+
+	full := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+	if got := metricValue(t, full, doctorMCPSessions, "corpus", ""); got != int64(2) {
+		t.Errorf("unwindowed mcp_sessions = %v, want 2", got)
+	}
+	if got := metricValue(t, full, doctorNeverObserved, "mcp_server", "unused_server"); got != int64(2) {
+		t.Errorf("unwindowed never_observed = %v, want 2", got)
+	}
+
+	w, err := NewWindow("2026-09-01", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, w)
+	if got := metricValue(t, env, doctorMCPSessions, "corpus", ""); got != int64(1) {
+		t.Errorf("windowed mcp_sessions = %v, want 1 — the August session left the denominator", got)
+	}
+	if got := metricValue(t, env, doctorNeverObserved, "mcp_server", "unused_server"); got != int64(1) {
+		t.Errorf("windowed never_observed = %v, want 1", got)
+	}
+	if got := metricValue(t, env, doctorUnconfiguredObserved, "mcp_server", "ghost"); got != int64(1) {
+		t.Errorf("windowed unconfigured_observed/ghost = %v, want 1", got)
+	}
+	if env.Corpus.Since != "2026-09-01" {
+		t.Errorf("corpus since = %q, want the window — the join ran windowed", env.Corpus.Since)
+	}
+	if got := metricValue(t, env, "skills_checked", "corpus", ""); got != int64(1) {
+		t.Errorf("the window must not gate static rows: skills_checked = %v", got)
+	}
+	warn := doctorWarnText(env)
+	if !strings.Contains(warn, "point-in-time") {
+		t.Errorf("a windowed join must warn that the static checks are not windowed:\n%s", warn)
+	}
+	if !strings.Contains(warn, "this run measures only events with") {
+		t.Errorf("the joined envelope must carry the standard windowed C1 warning:\n%s", warn)
+	}
+}
+
+// TestDoctorJoinZeroMCPCorpus keeps the DR-1 posture on an empty denominator:
+// a corpus with no mcp activity earns no never_observed rows — an absence
+// measured against zero sessions is the over-claim Validate cannot catch —
+// and one warning says why.
+func TestDoctorJoinZeroMCPCorpus(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	doctorWrite(t, filepath.Join(claudeRoot, "settings.json"),
+		`{"mcpServers":{"quiet":{"command":"`+doctorBinName+`"}}}`)
+	corpus := toolCorpus(t,
+		useIn(tsAt(1), "s1", "u1", "Bash", cmdLS, ""), okRes(tsAt(2), "s1", "u1"),
+	)
+	env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+
+	if got := metricOrNil(env, doctorNeverObserved, "mcp_server", "quiet"); got != nil {
+		t.Errorf("never_observed claimed against a zero denominator: %v", got)
+	}
+	if got := metricValue(t, env, doctorMCPSessions, "corpus", ""); got != int64(0) {
+		t.Errorf("mcp_sessions = %v, want a measured 0 — the corpus was streamed", got)
+	}
+	if !strings.Contains(doctorWarnText(env), "never_observed is not claimed") {
+		t.Errorf("the withheld rows need their denominator warning:\n%s", doctorWarnText(env))
+	}
+}
+
+// TestDoctorJoinPartialConfigCaveat pins the floor guard: a configured set
+// read off a half-broken config may misjudge an observed server as
+// unconfigured, so the miss keeps its row and gains its caveat.
+func TestDoctorJoinPartialConfigCaveat(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	doctorWrite(t, filepath.Join(claudeRoot, "settings.json"), `{"mcpServers": {`)
+	corpus := toolCorpus(t, useIn(tsAt(1), "s1", "u1", "mcp__ghost__ping", cmdLS, ""))
+	env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+
+	if got := metricValue(t, env, doctorUnconfiguredObserved, "mcp_server", "ghost"); got != int64(1) {
+		t.Errorf("a loud join miss stays a row over a partial config: %v", got)
+	}
+	if !strings.Contains(doctorWarnText(env), "configured set is partial") {
+		t.Errorf("the partial-config caveat is missing:\n%s", doctorWarnText(env))
+	}
+}
+
+// TestDoctorJoinMissingCorpusIsFatal pins the CLI posture the task draws: a
+// config root missing degrades (DR-1), a transcript corpus missing is the
+// same fatal scan error every other corpus command returns.
+func TestDoctorJoinMissingCorpusIsFatal(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	if _, err := DoctorJoinEnvelope(claudeRoot, projectDir, filepath.Join(projectDir, "no-corpus"),
+		"test", Window{}); err == nil {
+		t.Fatal("a missing corpus dir returned nil, want the scan error")
+	}
+}
+
+// TestDoctorJoinDeterminism is DR-1's four-run byte-equality gate over the
+// joined envelope, whose new maps (sessions, perServer) are exactly the kind
+// of iteration order that broke an earlier --json.
+func TestDoctorJoinDeterminism(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	doctorWrite(t, filepath.Join(claudeRoot, "settings.json"), `{"mcpServers":{
+		"unused_a":{"command":"`+doctorBinName+`"},"unused_b":{"type":"http"},"ghost":{"type":"sse"}}}`)
+	corpus := toolCorpus(t,
+		useIn(tsAt(1), "s1", "u1", "mcp__ghost__ping", cmdLS, ""),
+		useIn(tsAt(2), "s2", "u2", "mcp__ghost__other", cmdLS, ""),
+		useIn(tsAt(3), "s1", "u3", "Bash", cmdLS, `"attributionMcpServer":"attrd",`),
+	)
+	var first []byte
+	for run := range 4 {
+		env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+		var buf bytes.Buffer
+		if err := WriteJSON(&buf, env); err != nil {
+			t.Fatalf("WriteJSON: %v", err)
+		}
+		if run == 0 {
+			first = bytes.Clone(buf.Bytes())
+			continue
+		}
+		if !bytes.Equal(first, buf.Bytes()) {
+			t.Fatalf("run %d produced different JSON over an unchanged corpus", run)
+		}
+	}
+	// ghost IS configured (with a static finding: sse has no url check, but
+	// "unused_a"/"unused_b" must be the never_observed pair and ghost and
+	// attrd the unconfigured pair never fires for ghost).
+	env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+	for _, key := range []string{"unused_a", "unused_b"} {
+		if got := metricOrNil(env, doctorNeverObserved, "mcp_server", key); got == nil {
+			t.Errorf("%s: configured and never called, want a never_observed row", key)
+		}
+	}
+	if got := metricOrNil(env, doctorUnconfiguredObserved, "mcp_server", "ghost"); got != nil {
+		t.Errorf("a configured server reported as unconfigured: %v", got)
+	}
+	if got := metricValue(t, env, doctorUnconfiguredObserved, "mcp_server", "attrd"); got != int64(1) {
+		t.Errorf("unconfigured_observed/attrd = %v, want 1", got)
+	}
+}
+
+// TestRenderDoctorJoinTable pins the renderer to the envelope: every non-empty
+// dimension gets its fixed-order table, every warning prints verbatim, and a
+// flushed tabwriter table carries no tabs anywhere.
+func TestRenderDoctorJoinTable(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	doctorWrite(t, filepath.Join(claudeRoot, "settings.json"),
+		`{"mcpServers":{"unused_server":{"command":"`+doctorBinName+`"},"ghost":{"type":"websocket"}}}`)
+	doctorWrite(t, filepath.Join(claudeRoot, "plugins", "broken", ".claude-plugin", "plugin.json"), `oops{`)
+	doctorSkill(t, filepath.Join(claudeRoot, "skills"), "alpha", "# no frontmatter\n")
+	corpus := toolCorpus(t, useIn(tsAt(1), "s1", "u1", "mcp__ghost__ping", cmdLS, ""))
+	env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+
+	var buf bytes.Buffer
+	if err := RenderDoctor(&buf, env); err != nil {
+		t.Fatalf("RenderDoctor: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"tare doctor — " + corpus, "SKILL", "PLUGIN", "MCP_SERVER", "NEVER_OBSERVED",
+		"UNCONFIGURED_OBSERVED", "unused_server", "warning: mcp_server ghost: server_type_unknown",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered output is missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "\t") {
+		t.Errorf("a flushed tabwriter table must carry no tabs:\n%q", out)
+	}
+	// The ghost row carries a static finding AND an observation, never a
+	// never_observed: it was seen.
+	if strings.Contains(out, "no configuration issues detected") {
+		t.Errorf("a tree with findings and misses declared itself clean:\n%s", out)
+	}
+	// The joined mcp_server dimension is one table: the static finding and
+	// the join miss share the key's row, not the header.
+	if strings.Count(out, "MCP_SERVER") != 1 {
+		t.Errorf("MCP_SERVER table printed more than once:\n%s", out)
+	}
+}
+
+// TestRenderDoctorCleanTree is the zero-findings, zero-miss line. The corpus
+// here has no mcp activity at all, so the never_observed suppression warning
+// must still print beside the line: the line claims no detected issue, not a
+// fully measured join.
+func TestRenderDoctorCleanTree(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	doctorSkill(t, filepath.Join(claudeRoot, "skills"), "greet",
+		strings.ReplaceAll(doctorGoodSkill, "%s", "greet"))
+	doctorWrite(t, filepath.Join(claudeRoot, "plugins", "tare-p", ".claude-plugin", "plugin.json"),
+		`{"name":"tare-p"}`)
+	doctorWrite(t, filepath.Join(claudeRoot, "settings.json"),
+		`{"mcpServers":{"idle":{"command":"`+doctorBinName+`"}}}`)
+	env := doctorJoinEnv(t, claudeRoot, projectDir, t.TempDir(), Window{})
+
+	var buf bytes.Buffer
+	if err := RenderDoctor(&buf, env); err != nil {
+		t.Fatalf("RenderDoctor: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "no configuration issues detected") {
+		t.Errorf("a clean tree must print the one-line all-clear:\n%s", out)
+	}
+	for _, want := range []string{"SKILL", "PLUGIN", "MCP_SERVER"} {
+		if strings.Contains(out, "\n"+want+"\t") {
+			t.Errorf("an empty %s dimension printed a table:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "warning: mcp: no mcp tool call was seen") {
+		t.Errorf("the suppressed never_observed rows need their warning under the line:\n%s", out)
+	}
+}
+
+// doctorClaudeJSON is the store path doctorMCP derives from claudeRoot's
+// parent — ~/.claude.json beside ~/.claude — mirrored here so the fixtures
+// write exactly where the pass reads.
+func doctorClaudeJSON(claudeRoot string) string {
+	return filepath.Join(filepath.Dir(claudeRoot), ".claude.json")
+}
+
+// TestDoctorClaudeJSONUserScope is the flagship fix: a server configured only
+// in ~/.claude.json's top-level mcpServers joins the configured set, so
+// never_observed fires for it against the session denominator instead of the
+// store being invisible and the server surfacing as nothing at all.
+func TestDoctorClaudeJSONUserScope(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	doctorWrite(t, filepath.Join(claudeRoot, "settings.json"),
+		`{"mcpServers":{"used":{"command":"`+doctorBinName+`"}}}`)
+	doctorWrite(t, doctorClaudeJSON(claudeRoot), `{"mcpServers":{
+		"store_idle":{"command":"`+doctorBinName+`"},"used":{"command":"`+doctorBinName+`"}}}`)
+	corpus := toolCorpus(t, useIn(tsAt(1), "s1", "u1", "mcp__used__ping", cmdLS, ""))
+	env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+
+	// "used" collides user-scope across two files and counts once.
+	if got := metricValue(t, env, "mcp_servers_checked", "corpus", ""); got != int64(2) {
+		t.Errorf("mcp_servers_checked = %v, want 2 — the store joins the set, collisions count once", got)
+	}
+	if got := metricValue(t, env, doctorMCPSessions, "corpus", ""); got != int64(1) {
+		t.Errorf("mcp_sessions = %v, want 1", got)
+	}
+	if got := metricValue(t, env, doctorNeverObserved, "mcp_server", "store_idle"); got != int64(1) {
+		t.Errorf("never_observed/store_idle = %v, want 1 — the store server joins the denominator", got)
+	}
+	if got := metricOrNil(env, doctorNeverObserved, "mcp_server", "used"); got != nil {
+		t.Errorf("the called server earned never_observed: %v", got)
+	}
+	if got := metricOrNil(env, doctorUnconfiguredObserved, "mcp_server", "store_idle"); got != nil {
+		t.Errorf("a configured store server reported unconfigured: %v", got)
+	}
+	w := doctorWarnText(env)
+	if !strings.Contains(w, `mcp_server "store_idle": configured but never seen in the corpus — 1 session(s)`) {
+		t.Errorf("the store server's denominator warn is missing:\n%s", w)
+	}
+	if !strings.Contains(w, `overrides the one in `+filepath.Join(claudeRoot, "settings.json")+
+		" (later source wins on name collision within the user scope)") {
+		t.Errorf("the same-scope collision must be said out loud:\n%s", w)
+	}
+}
+
+// TestDoctorClaudeJSONProjectOverride pins the scope precedence across the new
+// source: the store's projects["<abs projectDir>"] entry is project-scoped, so
+// it wins over .mcp.json's same-named entry — and the findings pass judges the
+// winner only, so the loser's broken command earns no finding.
+func TestDoctorClaudeJSONProjectOverride(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	// No settings.json: the store also carries a user-scope entry, shadowed
+	// here by the project-scoped one under the same name.
+	doctorWrite(t, doctorClaudeJSON(claudeRoot), `{"mcpServers":{
+		"shared":{"command":"totally-missing-binary-xyz"}},
+		"projects":{"`+projectDir+`":{"mcpServers":{
+			"shared":{"command":"`+doctorBinName+`"}}}}}`)
+	doctorWrite(t, filepath.Join(projectDir, ".mcp.json"),
+		`{"mcpServers":{"shared":{"command":"totally-missing-binary-xyz"}}}`)
+
+	env := doctorEnv(t, claudeRoot, projectDir)
+	if got := metricOrNil(env, "findings", "mcp_server", "shared"); got != nil {
+		t.Errorf("a losing entry was judged: %v", got)
+	}
+	if got := metricValue(t, env, "mcp_servers_checked", "corpus", ""); got != int64(1) {
+		t.Errorf("mcp_servers_checked = %v, want 1 across three same-named entries", got)
+	}
+	w := doctorWarnText(env)
+	mcp := filepath.Join(projectDir, ".mcp.json")
+	store := doctorClaudeJSON(claudeRoot) + ` projects["` + projectDir + `"]`
+	if !strings.Contains(w, `mcp server "shared": the entry in `+store+" overrides the one in "+mcp+
+		" (later source wins on name collision within the project scope)") {
+		t.Errorf("the store's project section must win over .mcp.json:\n%s", w)
+	}
+	if !strings.Contains(w, "overrides the one in "+doctorClaudeJSON(claudeRoot)+
+		" (project config wins on name collision)") {
+		t.Errorf("the store's user section must lose to .mcp.json under the DR-1 rule:\n%s", w)
+	}
+}
+
+// TestDoctorClaudeJSONBroken keeps the absent-is-not-zero contract on the new
+// source: an unparseable store withholds the denominator with a floor-naming
+// warn and, per DR-1's standing posture, rides the withheld count with the
+// findings unjudged — while the other blocks stand untouched.
+func TestDoctorClaudeJSONBroken(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	doctorWrite(t, doctorClaudeJSON(claudeRoot), `{"mcpServers": {`)
+	doctorWrite(t, filepath.Join(claudeRoot, "settings.json"),
+		`{"mcpServers":{"weird":{"type":"websocket"}}}`)
+	doctorSkill(t, filepath.Join(claudeRoot, "skills"), "ok", strings.ReplaceAll(doctorGoodSkill, "%s", "ok"))
+
+	env := doctorEnv(t, claudeRoot, projectDir)
+	if got := metricOrNil(env, "mcp_servers_checked", "corpus", ""); got != nil {
+		t.Errorf("mcp_servers_checked = %v, want omitted over a floor", got)
+	}
+	w := doctorWarnText(env)
+	if !strings.Contains(w, doctorClaudeJSON(claudeRoot)) || !strings.Contains(w, "not valid JSON") {
+		t.Errorf("the broken store must be named: %s", w)
+	}
+	if !strings.Contains(w, "never_observed is then a floor, not a verdict") {
+		t.Errorf("the store warn must name its effect on the join:\n%s", w)
+	}
+	// DR-1's standing posture on a broken source: no entries are judged, so
+	// the keyed findings ride the withheld count instead of half-reporting.
+	if got := metricOrNil(env, "findings", "mcp_server", "weird"); got != nil {
+		t.Errorf("findings were judged over a broken source: %v", got)
+	}
+	if got := metricValue(t, env, "skills_checked", "corpus", ""); got != int64(1) {
+		t.Errorf("the store must not take the skills block down: %v", got)
+	}
+}
+
+// TestDoctorClaudeJSONEmpty is the measured-zero twin: a store that parses and
+// names no servers is configuration that was read and says none — it alone
+// turns the count from an absence into a real zero, with no phantom warn.
+func TestDoctorClaudeJSONEmpty(t *testing.T) {
+	t.Run("store alone is a measured zero", func(t *testing.T) {
+		claudeRoot, projectDir, _ := doctorPaths(t)
+		doctorWrite(t, doctorClaudeJSON(claudeRoot), `{"projects":{"/some/other":{"mcpServers":{"far":{"type":"http"}}}}}`)
+		env := doctorEnv(t, claudeRoot, projectDir)
+		if got := metricValue(t, env, "mcp_servers_checked", "corpus", ""); got != int64(0) {
+			t.Errorf("mcp_servers_checked = %v, want a measured 0", got)
+		}
+		if got := metricOrNil(env, "findings", "mcp_server", "far"); got != nil {
+			t.Errorf("another project's server leaked into this run's set: %v", got)
+		}
+	})
+	t.Run("empty store adds nothing beside settings.json", func(t *testing.T) {
+		claudeRoot, projectDir, _ := doctorPaths(t)
+		doctorWrite(t, doctorClaudeJSON(claudeRoot), `{}`)
+		doctorWrite(t, filepath.Join(claudeRoot, "settings.json"),
+			`{"mcpServers":{"solo":{"command":"`+doctorBinName+`"}}}`)
+		env := doctorEnv(t, claudeRoot, projectDir)
+		if got := metricValue(t, env, "mcp_servers_checked", "corpus", ""); got != int64(1) {
+			t.Errorf("mcp_servers_checked = %v, want 1", got)
+		}
+		if n := strings.Count(doctorWarnText(env), "mcp:"); n != 0 {
+			t.Errorf("a valid empty store must earn no mcp warn:\n%s", doctorWarnText(env))
+		}
+	})
 }

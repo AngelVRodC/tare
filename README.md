@@ -212,6 +212,7 @@ Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
 | `tare attribute` | Which skill / plugin / agent / MCP server the tokens belong to, and how much prior context was re-billed | `--top`, `--all` |
 | `tare corruption` | What share of calls failed, how many the harness denied instead, and what returned nothing or carried a truncation marker | `--top`, `--all` |
 | `tare failures` | Whether the same call keeps failing — a ≥3-error loop in one session, or one payload erroring across sessions — rolled up by the skill / plugin / MCP server of the turns that made it; policy denials are split out of the failure counts exactly as in `corruption`, but a denial still feeds the patterns | `--top`, `--all` |
+| `tare doctor` | Whether the installed skill / plugin / MCP configuration is statically loadable, and which configured MCP servers are never seen in the local transcripts (or appear there without any config naming them) | — |
 | `tare report` | All four, composed into one reproducible artifact | — |
 
 | Flag given alone | Effect |
@@ -227,7 +228,13 @@ Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
 `--harness` is `tools` only: which harness to read, claude-code (default) or
 opencode. Registered there and nowhere else, so `tare scan --harness opencode`
 is an error rather than a flag that silently does nothing. `scan`, `attribute`,
-`corruption`, `failures` and `report` read Claude Code and nothing else. See
+`corruption`, `failures`, `doctor` and `report` read Claude Code and nothing
+else. `doctor` additionally reads harness config — `~/.claude` and the working
+directory, plus `~/.claude.json`: the MCP set merges user scope
+(`~/.claude/settings.json` and the store's top-level `mcpServers`) with project
+scope (`.mcp.json` and the store's `projects` entry for that directory),
+project winning a name collision. `--dir` never redirects any of it: `--dir`
+stays the transcript corpus the configured-but-never-seen join runs against. See
 [OpenCode](#opencode) for what the second reader can and cannot measure.
 
 `--top N` sets how many rows each dimension prints — 15 by default, `0` for all
@@ -437,7 +444,7 @@ diff a.json b.json      # no output — the two runs are byte-identical
 - **An adapter interface.** Two harnesses are read, and neither reaches the
   other through an interface or a plugin registry. `tare tools` picks one of two
   functions and hands both results to the same renderer — that is the entire
-  seam. Two readers, one of which supplies one of the five commands, is not yet
+  seam. Two readers, one of which supplies exactly one command, is not yet
   a shape worth inventing.
 - **Anything over the network.** No pricing API, no telemetry, no update check.
   The only external process it ever starts is a local binary — `sqlite3`, to
@@ -525,7 +532,7 @@ its corpus by 30.
 | Two runs disagree | The corpus is live. Copy it and point `--dir` at the copy — see [Reproducibility](#reproducibility). |
 | Dollars read `unavailable` | That session has no `cost-state` event. Reporting the gap is deliberate; reporting `$0.00` would be a lie. |
 | `retention_gap` is non-zero | Claude Code pruned transcripts its own cache still counts. Those sessions cannot be measured at all. |
-| `tare: flag provided but not defined: -harness` | `--harness` is registered on `tools` only. The other four commands read Claude Code and nothing else. |
+| `tare: flag provided but not defined: -harness` | `--harness` is registered on `tools` only. The other commands read Claude Code and nothing else. |
 | `tare: unknown --harness "…"` | The two values are `claude-code` and `opencode`. The error names both. |
 | `tare: sqlite3 is not on PATH …` | The OpenCode reader has no other data source, so it fails rather than returning a partial answer. `sqlite3` ships with macOS. |
 | `tare: opencode database not readable` | `--dir` has to be the directory holding `opencode.db`, not the file itself. It defaults to `~/.local/share/opencode`. |

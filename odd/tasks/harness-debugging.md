@@ -68,19 +68,20 @@ No SDD artifacts. One bounded writer per task.
       the corruption split). Sort orders total (count desc, key asc).
       Checks: `go build ./... && go vet ./... && go test ./... && gofmt -l .` → 0.
       Route: delegated writer. Commit: `feat: detect failure patterns in a new failures envelope`
-- [ ] FD-2 — `tare failures` CLI: `main.go` dispatch, `usage()` line,
+- [x] FD-2 — `tare failures` CLI: `main.go` dispatch, `usage()` line,
       `RenderFailures` table (`--top/--all` like corruption), `--json`, wire
       into nothing else (no `report` merge — deferred). Docs: README + AGENTS.md
       command list. Checks: build/vet/test/gofmt + manual run vs frozen corpus copy.
       Route: delegated writer. Commit: `feat: wire the failures command into the CLI`
-- [ ] DR-1 — `tare doctor` core: `internal/report/doctor.go` — validate
-      plugin.json / skill SKILL.md frontmatter (name/kebab, parseable
-      allowed-tools), MCP server configs from settings/.mcp.json, flag
-      servers configured but never seen in the corpus (silent connection
-      failure) by cross-joining the transcript server list. Read-only;
-      stdlib-only minimal YAML (key: value lines) is sanctioned. Checks as FD-1.
+- [ ] DR-1 — `tare doctor` core: `internal/report/doctor.go` — STATIC config
+      health only: validate plugin.json / skill SKILL.md frontmatter (name/kebab,
+      parseable allowed-tools), MCP server configs from settings.json/.mcp.json,
+      flag configured command binaries missing from PATH. Read-only;
+      stdlib-only minimal YAML (key: value lines) is sanctioned. The
+      configured-but-never-seen cross-join moved to DR-2. Checks as FD-1.
       Route: delegated writer. Commit: `feat: validate harness configuration in a new doctor envelope`
-- [ ] DR-2 — `tare doctor` CLI wiring + renderer + docs. Checks as FD-2.
+- [ ] DR-2 — `tare doctor` cross-join (servers configured but absent from the
+      corpus window), CLI wiring + renderer + docs. Checks as FD-2.
       Route: delegated writer. Commit: `feat: wire the doctor command into the CLI`
 - [ ] SK-1 — `.agents/skills/tare/SKILL.md`: add the failure-diagnosis loop
       (run `failures` → attribute → `doctor` → propose harness fix; judgment
@@ -91,6 +92,11 @@ No SDD artifacts. One bounded writer per task.
 ## Progress / evidence
 
 - 2026-09-19: scope authorized (all three, failures first). Branch created.
+- Research sources: Argus (rule analyzer on ~/.claude/projects JSONL),
+  AgentDebugX (arXiv:2607.18754), claudelab MCP troubleshooting guide,
+  modelcontextprotocol.io debugging docs, jeremylongshore plugin troubleshooting wiki.
+- Delivery: user chose **single-pr** at 1052 accumulated lines — one PR for the
+  feature with maintainer-accepted `size:exception` at PR time.
 - FD-1 done — commit `f70cd3b` (1052 lines, 3 files). Checks: build/vet/gofmt/
   `go test ./...` green (writer + parent spot-check), `go list -m all` = 1.
   Review: assessed `medium` (slice_budget_reached) → consent granted →
@@ -100,9 +106,21 @@ No SDD artifacts. One bounded writer per task.
   reproductions through 3.4.0 stable); comment `#issuecomment-5744957636`.
   Resolved via the exact candidate-scoped decline (`declined_this_candidate`).
   **FD-1 review outcome: unavailable (provider defect) — no PASS claimed.**
-  Review boundary for the next commit: `main` (this candidate burned
-  unreviewed-by-defect, not reviewed).
+- FD-2 done — commits `9b6dd2c` (docs) + `a9ec2b6` (wiring; 6 files, 1368 lines
+  to date). Writer ran all six checks green; parent added the `failures` cases
+  to the flag-scoping tests (`--top -1` rejected, `--harness` rejected,
+  `--help` exits 0). Smoke over the live corpus (read-only): 10 repeated-failure
+  pairs, 876 errored results, attribution tables render. Known cosmetic gap:
+  new corpus metric names (`retry_loops`, `repeated_failure_pairs`,
+  `errored_results`) fall through the `labels` map unmapped — by design.
+  Review: granted again, refused identically on lineage
+  `review-64c8014297ec3aa9`; second occurrence comment posted
+  (`#issuecomment-5745303273`); resolved via the captured decline.
+  **FD-2 review outcome: unavailable (provider defect) — no PASS claimed.**
+  Until #4030 ships a fix, every granted review on this runtime wedges; the
+  user owns `gentle-ai review mode enable|disable` if they want that ceremony
+  paused. Review boundary: still `main`, both slices declined-by-defect.
 
 ## Next step
 
-Confirm chain strategy (running count 1052 > 400), then delegate FD-2.
+Delegate DR-1 (static config health envelope) to one bounded writer.

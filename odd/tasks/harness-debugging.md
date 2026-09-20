@@ -102,7 +102,7 @@ No SDD artifacts. One bounded writer per task.
       roots OpenCode reads. Plugin checks stay Claude-only: the OpenCode run
       omits that block + warns (absent ≠ zero). Checks as DR-1.
       Route: delegated writer. Commit: `feat: teach the doctor to read the opencode harness`
-- [ ] SK-1 — `.agents/skills/tare/SKILL.md`: add the failure-diagnosis loop
+- [x] SK-1 — `.agents/skills/tare/SKILL.md`: add the failure-diagnosis loop
       (run `failures` → attribute → `doctor` → propose harness fix; judgment
       stays with the agent). Checks: frontmatter valid, `opencode debug skill`
       still lists it. Route: direct inline (1 mechanical file). Commit:
@@ -152,4 +152,8 @@ No SDD artifacts. One bounded writer per task.
 
 ## Next step
 
-Delegate DR-2 (doctor cross-join + CLI wiring + docs).
+Delivery: single PR (`size:exception` accepted) from `feat/harness-debugging`
+(9 commits) to `main` — push/PR are the user's call under ordinary policy.
+Review: retry the native review per-commit or per-slice AFTER gentle-ai#4030
+ships a fix; whole-slice candidate also exceeds the native lens context budget
+at 4526 lines, so it must be smaller candidates regardless.

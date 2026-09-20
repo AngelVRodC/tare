@@ -4,9 +4,11 @@ description: >-
   Measure what installed tooling actually costs context. Use when asked what a
   tool, skill, plugin, agent, or MCP server is costing the context window;
   which of them is worth keeping; what is eating tokens or bytes; whether a
-  skill or MCP server pays for itself; or where transcript bloat comes from.
-  Runs the local `tare` CLI over local agent transcripts. No network access;
-  nothing leaves the machine.
+  skill or MCP server pays for itself; where transcript bloat comes from; why
+  a skill, plugin, or MCP server misbehaves; what keeps failing; or whether
+  the harness configuration is healthy. Runs the local `tare` CLI over local
+  agent transcripts and harness config. No network access; nothing leaves the
+  machine.
 license: MIT
 compatibility: >-
   Requires the `tare` CLI installed and on PATH. The corpus probes and the
@@ -16,7 +18,7 @@ compatibility: >-
   specific harness.
 metadata:
   author: AngelVRodC
-  version: "1.1.0"
+  version: "1.2.0"
 allowed-tools: Read, Grep, Glob, Bash(tare:*)
 ---
 
@@ -39,18 +41,26 @@ ls -A ~/.claude/projects 2>/dev/null | grep -q .   # Claude Code corpus present?
 test -f ~/.local/share/opencode/opencode.db        # OpenCode corpus present?
 ```
 
-- Claude Code corpus present → all five commands are available, including every
-  `attribution_*` dimension.
-- OpenCode corpus present → `tare tools --harness opencode` is available.
-  OpenCode cannot produce `attribution_*`; see references/harnesses.md.
+- Claude Code corpus present → every corpus command is available, including
+  every `attribution_*` dimension, and `tare doctor` joins its config findings
+  against that corpus.
+- OpenCode corpus present → `tare tools --harness opencode` and `tare doctor
+  --harness opencode` are available. OpenCode cannot produce `attribution_*`;
+  see references/harnesses.md.
+- `tare doctor` is gated one notch differently: its static config passes read
+  files, not transcripts. Under `--harness opencode` they run with or without
+  a database — a missing database costs only the cross-join, dropped with a
+  warning while the config blocks stand alone. The claude-code `doctor`
+  joins unconditionally and fails without a corpus, like every corpus
+  command.
 - Harness installed, corpus absent → emit exactly one line and claim nothing:
 
   > OpenCode is installed but no corpus was found at
   > ~/.local/share/opencode/opencode.db — skipping it and claiming nothing
   > about it.
 
-  Run nothing for that harness. Fabricate nothing. No metrics for a corpus
-  that does not exist.
+  Run nothing that reads a corpus for that harness. Fabricate nothing. No
+  metrics for a corpus that does not exist.
 
 `attribution_*` instructions are gated on the Claude Code corpus existing —
 the gate is the corpus, not the process. An agent running under OpenCode that
@@ -67,15 +77,21 @@ Flags go after the command, always: `tare <command> [flags]`.
 | Same, over the OpenCode database | `tare tools --harness opencode` | one small table |
 | How many tokens and dollars per skill, plugin, agent, MCP server? | `tare attribute` | several tables |
 | Is a tool corrupting what it returns: failures, denials, empties, truncation? | `tare corruption` | compact tables |
+| What keeps failing: retry loops, the same call erroring across sessions, failures per skill, plugin, or MCP server? | `tare failures` | compact tables |
+| Is the harness configuration healthy: loadable skills and servers, a server configured but never used? | `tare doctor` | count tables; the warnings carry the findings |
 | Everything composed into one artifact for later reading? | `tare report > report.md` | file, not terminal |
 
 Flag scope (a flag exists only where it means something):
 
 - `--dir <root>` and `--json` are accepted by every command.
-- `--harness claude-code|opencode` is accepted by `tools` only; `claude-code`
-  is the default.
-- `--top N` and `--all` are accepted by `attribute` and `corruption` only.
-  `tare scan --all` is an error by design, not a silently ignored flag.
+- `--harness claude-code|opencode` is accepted by `tools` and `doctor` only;
+  `claude-code` is the default.
+- `--top N` and `--all` are accepted by `attribute`, `corruption` and
+  `failures` only. `tare scan --all` is an error by design, not a silently
+  ignored flag.
+- `tare doctor` takes no `--top` by design: its tables are bounded by the
+  config surface, not by calls, and capping one would hide the finding the
+  command exists to surface.
 
 Never open `tare report --json` as a first read: it is the largest envelope the
 program produces. Measured sizes and their token estimates are in
@@ -118,6 +134,25 @@ recorded share has drifted between runs, so carry the rule, never the number.
 On the token-attribution tables, read the `(unattributed)` row first — the
 rule and its reason are in references/metrics.md.
 
+## Debugging the harness — detect, attribute, propose
+
+Cost questions ask what tooling consumes context; debugging questions ask what
+is misbehaving. Detect with both commands: `tare failures` reports runtime
+patterns — retry loops, the same call erroring across sessions — and
+`tare doctor` reports static defects in the configuration the harness will
+load; run both, because a healthy config does not preclude a tool that errors,
+nor the reverse. Attribute by naming the entity the evidence already carries —
+an `attribution_*` row in the failures tables, a config path or server key in
+a doctor finding — never by widening to a guess. Propose, but do not apply:
+tare never states a root cause, because a root cause lives where the error was
+caused, not where it surfaced — trace a pattern back to its first errored
+session before naming one, and a fix to the user's harness is the user's
+authorization, not the skill's. Refusal shape:
+
+> `<tool>` errored N consecutive times on one payload (`failures`), and its
+> server's command does not resolve on this process's PATH (`doctor`) — the
+> cause may sit elsewhere, and applying any fix is your call, not this data's.
+
 ## Worked example A — byte attribution (`tare tools`)
 
 Any corpus that records tool names and result sizes.
@@ -154,6 +189,23 @@ Claude Code corpus only — gate on the Step 1 probe before running.
 4. Close with the same value question as example A. The floor rule applies to
    the five `attribution_*` dimensions only; the byte tables have no
    `(unattributed)` bucket.
+
+## Worked example C — a plugin that keeps failing
+
+Claude Code corpus only — gate on the Step 1 probe before running either
+command.
+
+1. Run `tare failures`; take the top `retry_loop` row — its key names the
+   session, the tool, and a digest of the payload that kept erroring.
+2. Read the `attribution_plugin` / `attribution_skill` tables: those rows name
+   who made the failing turns. No field on a turn means no row, never zero.
+3. Run `tare doctor`; a `name_mismatch` on that skill or a `command_not_found`
+   on its server is the static twin of the runtime pattern.
+4. Deliver one finding sentence: the pattern, the evidence, and the caveat
+   that `command_not_found` measures this process's PATH — the harness may
+   launch servers with a different environment.
+5. Propose the fix, then close with the question only the user can answer:
+   whether to apply it is the user's call, not the skill's.
 
 ## Links
 

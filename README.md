@@ -16,7 +16,7 @@ number is tagged with how it was arrived at, and a number the harness never
 recorded is named as unavailable rather than printed as zero.
 
 Two harnesses are read: Claude Code, and [OpenCode](#opencode) behind
-`tare tools --harness opencode`.
+`--harness opencode` on `tare tools` and `tare doctor`.
 
 > ```bash
 > go build -o tare . && ./tare report
@@ -211,6 +211,8 @@ Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
 | `tare tools` | What each tool cost — calls and context bytes in; errors and produced bytes where recorded | `--harness` |
 | `tare attribute` | Which skill / plugin / agent / MCP server the tokens belong to, and how much prior context was re-billed | `--top`, `--all` |
 | `tare corruption` | What share of calls failed, how many the harness denied instead, and what returned nothing or carried a truncation marker | `--top`, `--all` |
+| `tare failures` | Whether the same call keeps failing — a ≥3-error loop in one session, or one payload erroring across sessions — rolled up by the skill / plugin / MCP server of the turns that made it; policy denials are split out of the failure counts exactly as in `corruption`, but a denial still feeds the patterns | `--top`, `--all` |
+| `tare doctor` | Whether the installed skill / plugin / MCP configuration is statically loadable, and which configured MCP servers are never seen in the local transcripts (or appear there without any config naming them); with `--harness opencode`, the same checks against OpenCode's config, skill roots and database, minus the plugin block it cannot honestly check | `--harness` |
 | `tare report` | All four, composed into one reproducible artifact | — |
 
 | Flag given alone | Effect |
@@ -223,20 +225,35 @@ Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
 | `--dir` | `~/.claude/projects`; `~/.local/share/opencode` with `--harness opencode` | Transcript root to read |
 | `--json` | off | Emit the JSON envelope instead of the table |
 
-`--harness` is `tools` only: which harness to read, claude-code (default) or
-opencode. Registered there and nowhere else, so `tare scan --harness opencode`
-is an error rather than a flag that silently does nothing. `scan`, `attribute`,
-`corruption` and `report` read Claude Code and nothing else. See
+`--harness` is `tools` and `doctor` only: which harness to read,
+claude-code (default) or opencode. Registered only where it means something,
+so `tare scan --harness opencode` is an error rather than a flag that silently
+does nothing. `scan`, `attribute`, `corruption`, `failures` and `report` read
+Claude Code and nothing else. Claude Code's `doctor` additionally reads harness
+config — `~/.claude` and the working
+directory, plus `~/.claude.json`: the MCP set merges user scope
+(`~/.claude/settings.json` and the store's top-level `mcpServers`) with project
+scope (`.mcp.json` and the store's `projects` entry for that directory),
+project winning a name collision. `--dir` never redirects any of it: `--dir`
+stays the transcript corpus the configured-but-never-seen join runs against.
+`doctor --harness opencode` runs the same three kinds of pass on the OpenCode
+layout — the `mcp` blocks of `~/.config/opencode/opencode.json` and the
+project's `opencode.json` (project wins), the SKILL.md roots OpenCode reads,
+and a name-based join against `opencode.db` — with no plugin block at all:
+OpenCode has no manifest tare can validate, so the block is absent with a
+warning, never a zero. See
 [OpenCode](#opencode) for what the second reader can and cannot measure.
 
 `--top N` sets how many rows each dimension prints — 15 by default, `0` for all
 of them — and `--all` is `--top 0` under another name. A table that was cut says
 so and names the flag: `showing top 15 of 67 skill rows — use --all`. Both are
-registered on `attribute` and `corruption` only, for the same reason
-`--harness` is registered on `tools` only: `scan` and `tools` print every row
+registered on `attribute`, `corruption` and `failures` only, for the same reason
+`--harness` is registered on `tools` and `doctor` only: `scan` and `tools` print every row
 already, and the Markdown `tare report` never truncates at all — a file is not
 a terminal, and `--all` is not spellable after the fact by whoever reads the
-file.
+file. On `failures` the cap cuts the two ranked pattern tables; the attribution
+tables print in full, because their rows are bounded by installed tooling, not
+by calls.
 
 `tare report` writes the artifact: Markdown for a reader, `--json` for a
 machine. Both are self-contained — the header records the tool version, the
@@ -434,7 +451,7 @@ diff a.json b.json      # no output — the two runs are byte-identical
 - **An adapter interface.** Two harnesses are read, and neither reaches the
   other through an interface or a plugin registry. `tare tools` picks one of two
   functions and hands both results to the same renderer — that is the entire
-  seam. Two readers, one of which supplies one of the five commands, is not yet
+  seam. Two readers, one of which supplies exactly one command, is not yet
   a shape worth inventing.
 - **Anything over the network.** No pricing API, no telemetry, no update check.
   The only external process it ever starts is a local binary — `sqlite3`, to
@@ -515,16 +532,16 @@ its corpus by 30.
 | `command not found: tare`, or `fish: Unknown command: tare` | The binary exists but the directory `go install` wrote it to is not on PATH, and `go install` prints nothing either way. See [Putting tare on your PATH](#putting-tare-on-your-path). |
 | `tare: no command given` | A subcommand is required. `tare` with no arguments prints the list. |
 | `tare: flags go after the command` | Exactly that: `tare scan --json`, not `tare --json scan`. |
-| `tare: unknown command "tool"` | Not a subcommand. `tare --help` prints the five that are. |
-| `tare: flag provided but not defined: -all` | `--all` and `--top` are registered on `attribute` and `corruption` only — the two commands whose tables are capped. |
+| `tare: unknown command "tool"` | Not a subcommand. `tare --help` prints the list of those that are. |
+| `tare: flag provided but not defined: -all` | `--all` and `--top` are registered on `attribute`, `corruption` and `failures` only — the three commands whose tables are capped. |
 | `tare: --top needs 0 or more rows` | `--top` counts rows. `0` means every row, which is what `--all` asks for. |
 | `files 0` and an empty date range | `--dir` is not a transcript root. It should contain per-project subdirectories of `*.jsonl`. |
 | Two runs disagree | The corpus is live. Copy it and point `--dir` at the copy — see [Reproducibility](#reproducibility). |
 | Dollars read `unavailable` | That session has no `cost-state` event. Reporting the gap is deliberate; reporting `$0.00` would be a lie. |
 | `retention_gap` is non-zero | Claude Code pruned transcripts its own cache still counts. Those sessions cannot be measured at all. |
-| `tare: flag provided but not defined: -harness` | `--harness` is registered on `tools` only. The other four commands read Claude Code and nothing else. |
+| `tare: flag provided but not defined: -harness` | `--harness` is registered on `tools` and `doctor` only. The other commands read Claude Code and nothing else. |
 | `tare: unknown --harness "…"` | The two values are `claude-code` and `opencode`. The error names both. |
-| `tare: sqlite3 is not on PATH …` | The OpenCode reader has no other data source, so it fails rather than returning a partial answer. `sqlite3` ships with macOS. |
+| `tare: sqlite3 is not on PATH …` | The `tools --harness opencode` reader has no other data source, so it fails rather than returning a partial answer; `doctor --harness opencode` instead omits its join block with a warning and runs the config checks. `sqlite3` ships with macOS. |
 | `tare: opencode database not readable` | `--dir` has to be the directory holding `opencode.db`, not the file itself. It defaults to `~/.local/share/opencode`. |
 | `tare: opencode query failed: the opencode.db-wal sidecar is missing` | `opencode.db` is in WAL mode and cannot be opened read-only without `-wal`. Copy all three of `.db`, `.db-wal` and `.db-shm`. Copying `.db` plus `-shm` does *not* help — `-wal` is the one that matters. |
 | `tare: opencode query failed: opencode.db-shm is absent, so sqlite3 has to create it` | The directory is not writable. Reading needs to create `-shm`; copy all three files somewhere writable, or archive `-shm` alongside the other two. |
@@ -586,9 +603,10 @@ Every command it prescribes parses against `usage()`:
 | What share of tokens does a skill/plugin own? | `tare attribute --all` |
 | Where are the empty and truncated tool results? | `tare corruption --all` |
 
-Flags go after the command. `--harness` exists on `tools` only; `--top N` and
-`--all` exist on `attribute` and `corruption` only. The skill never hardcodes a
-percentage: shares change with your corpus, so it reads them from your run.
+Flags go after the command. `--harness` exists on `tools` and `doctor` only; `--top N` and
+`--all` exist on `attribute`, `corruption` and `failures` only. The skill never
+hardcodes a percentage: shares change with your corpus, so it reads them from
+your run.
 
 ## Contributing
 

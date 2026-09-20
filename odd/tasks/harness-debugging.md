@@ -1,0 +1,159 @@
+# ODD — tare harness-debugging transformation
+
+## Objective
+
+Transform tare from a pure cost meter into a harness diagnostic tool: detect
+failure patterns, attribute them to the installed tooling that caused them, and
+validate harness configuration — while keeping every tare invariant.
+
+## Problem / why
+
+tare already counts per-tool errors, denials and truncations (`corruption`) and
+attributes turns to skills/plugins/MCP (`attribute`), but nothing joins them or
+detects *patterns*: retry loops, the same failing call repeated across sessions,
+failures concentrated in one skill, silent plugin failures invisible in
+transcripts. Research (Argus rule analyzer, AgentDebugX arXiv:2607.18754
+Detect→Attribute→Recover loop, MCP troubleshooting guides) says the value is in
+pattern detection + attribution evidence, with root-cause judgment left to the
+LLM driving the CLI — consistent with tare's "names no third-party tool" rule.
+
+## Authorized scope (user chose: all three slices, failures first)
+
+1. `tare failures` — transcript pattern detection + attribution (slices FD-1, FD-2).
+2. `tare doctor` — read-only harness config health checks (DR-1, DR-2, DR-3).
+3. Skill upgrade — Detect→Attribute→Propose loop in the tare skill (SK-1).
+
+Harness scope (user clarification 2026-09-19): the feature serves BOTH Claude
+Code and OpenCode. `failures` rides the Claude Code transcript corpus (like
+scan/attribute/corruption); `doctor` covers both harnesses via `--harness`,
+following the `tools` precedent: two same-signature envelope functions chosen by
+dispatch, no adapter interface. Claude Code's user/project MCP store
+(`~/.claude.json`) is folded into DR-2 (measured 2026-09-19: 4 top-level
+`mcpServers`, 37 project entries — without it, the join is inverted on real
+machines); OpenCode's config + DB adapter is DR-3.
+
+Out of scope unless re-authorized: modifying existing commands' behavior, new
+dependencies, network access, fixing the user's harness itself.
+
+## Constraints (load-bearing, from AGENTS.md)
+
+- Stdlib only; `go list -m all | wc -l` stays 1.
+- `bufio.Reader` streaming; never load the corpus; bounded memory per finding.
+- Absent ≠ zero: unrecorded metrics are omitted + warned, never `0`.
+- Every metric carries a `Derivation`; estimated rows need a `Method`.
+- Deterministic render: never sum floats or order rows by map iteration;
+  `TestReportReproducible`-style byte-identical `--json` applies to new envelopes.
+- JSON name is the contract; `usage()` is the only flag docs users see.
+- Envelope must pass `Envelope.Validate`.
+
+## TDD mode
+
+- Resolved: **off** (source: no strict-TDD config or user request found;
+  `mem_search` for testing config returned nothing).
+- Runner for ordinary checks: `go test ./...`.
+
+## Route
+
+Delegated direct (writer trigger: each slice touches 2+ non-trivial files).
+No SDD artifacts. One bounded writer per task.
+
+## Delivery
+
+- Forecast: >400 authored lines total across the feature → strategy
+  **ask-on-risk** (default); each task sized to its own work-unit commit on
+  `feat/harness-debugging`. Chain strategy asked once at PR planning, not now.
+- Native review candidate = each work-unit commit; `gentle-ai review mode status`
+  decides whether review runs (off = ordinary policy, no ceremony).
+
+## Tasks
+
+- [x] FD-1 — `tare failures` core: envelope builder `FailuresEnvelope` in
+      `internal/report/failures.go` + fixture tests. Patterns (each a keyed
+      metric block): (a) retry loop — identical tool + identical call payload
+      failing ≥3 consecutive times within one session; (b) repeated failure —
+      same tool+payload erroring across ≥2 distinct sessions; (c)
+      attribution — error counts rolled up by attributionSkill /
+      attributionPlugin / attributionMcpServer (denied calls excluded, reusing
+      the corruption split). Sort orders total (count desc, key asc).
+      Checks: `go build ./... && go vet ./... && go test ./... && gofmt -l .` → 0.
+      Route: delegated writer. Commit: `feat: detect failure patterns in a new failures envelope`
+- [x] FD-2 — `tare failures` CLI: `main.go` dispatch, `usage()` line,
+      `RenderFailures` table (`--top/--all` like corruption), `--json`, wire
+      into nothing else (no `report` merge — deferred). Docs: README + AGENTS.md
+      command list. Checks: build/vet/test/gofmt + manual run vs frozen corpus copy.
+      Route: delegated writer. Commit: `feat: wire the failures command into the CLI`
+- [x] DR-1 — `tare doctor` core: `internal/report/doctor.go` — STATIC config
+      health only: validate plugin.json / skill SKILL.md frontmatter (name/kebab,
+      parseable allowed-tools), MCP server configs from settings.json/.mcp.json,
+      flag configured command binaries missing from PATH. Read-only;
+      stdlib-only minimal YAML (key: value lines) is sanctioned. The
+      configured-but-never-seen cross-join moved to DR-2. Checks as FD-1.
+      Route: delegated writer. Commit: `feat: validate harness configuration in a new doctor envelope`
+- [x] DR-2 — `tare doctor` cross-join (servers configured but absent from the
+      corpus window), CLI wiring + renderer + docs. Includes the `~/.claude.json`
+      fix (user-scope + project-scope `mcpServers`) surfaced by the live smoke.
+      Checks as FD-2. Route: delegated writer. Commit: `feat: wire the doctor command into the CLI`
+- [x] DR-3 — `tare doctor` OpenCode adapter: `--harness opencode` — validate
+      `mcp` blocks in `~/.config/opencode/opencode.json` + project
+      `opencode.json` (server names matched longest-first like `openCodeServer`),
+      cross-join configured vs observed from the OpenCode DB (sqlite3 binary,
+      same snapshot discipline as opencode.go), and reuse the SKILL.md
+      frontmatter checks over `~/.config/opencode/skills` plus the project skill
+      roots OpenCode reads. Plugin checks stay Claude-only: the OpenCode run
+      omits that block + warns (absent ≠ zero). Checks as DR-1.
+      Route: delegated writer. Commit: `feat: teach the doctor to read the opencode harness`
+- [x] SK-1 — `.agents/skills/tare/SKILL.md`: add the failure-diagnosis loop
+      (run `failures` → attribute → `doctor` → propose harness fix; judgment
+      stays with the agent). Checks: frontmatter valid, `opencode debug skill`
+      still lists it. Route: direct inline (1 mechanical file). Commit:
+      `docs: teach the tare skill the detect-attribute-propose loop`
+
+## Progress / evidence
+
+- 2026-09-19: scope authorized (all three, failures first). Branch created.
+- Research sources: Argus (rule analyzer on ~/.claude/projects JSONL),
+  AgentDebugX (arXiv:2607.18754), claudelab MCP troubleshooting guide,
+  modelcontextprotocol.io debugging docs, jeremylongshore plugin troubleshooting wiki.
+- Delivery: user chose **single-pr** at 1052 accumulated lines — one PR for the
+  feature with maintainer-accepted `size:exception` at PR time.
+- FD-1 done — commit `f70cd3b` (1052 lines, 3 files). Checks: build/vet/gofmt/
+  `go test ./...` green (writer + parent spot-check), `go list -m all` = 1.
+  Review: assessed `medium` (slice_budget_reached) → consent granted →
+  `review-reliability` capture refused twice by the OpenCode review transport
+  (`opencode_review_transport_binding_invalid`, session root == repo root).
+  Reported as one occurrence comment on gentle-ai#4030 (canonical open tracker,
+  reproductions through 3.4.0 stable); comment `#issuecomment-5744957636`.
+  Resolved via the exact candidate-scoped decline (`declined_this_candidate`).
+  **FD-1 review outcome: unavailable (provider defect) — no PASS claimed.**
+- FD-2 done — commits `9b6dd2c` (docs) + `a9ec2b6` (wiring; 6 files, 1368 lines
+  to date). Writer ran all six checks green; parent added the `failures` cases
+  to the flag-scoping tests (`--top -1` rejected, `--harness` rejected,
+  `--help` exits 0). Smoke over the live corpus (read-only): 10 repeated-failure
+  pairs, 876 errored results, attribution tables render. Known cosmetic gap:
+  new corpus metric names (`retry_loops`, `repeated_failure_pairs`,
+  `errored_results`) fall through the `labels` map unmapped — by design.
+  Review: granted again, refused identically on lineage
+  `review-64c8014297ec3aa9`; second occurrence comment posted
+  (`#issuecomment-5745303273`); resolved via the captured decline.
+  **FD-2 review outcome: unavailable (provider defect) — no PASS claimed.**
+  Until #4030 ships a fix, every granted review on this runtime wedges; the
+  user owns `gentle-ai review mode enable|disable` if they want that ceremony
+  paused. Review boundary: still `main`, both slices declined-by-defect.
+- DR-1 done — commit `cf308b9` (doctor.go + doctor_test.go, static config
+  health: skills frontmatter / plugin manifests / MCP server configs,
+  `exec.LookPath` on commands). Writer ran all five checks green; parent
+  spot-checked `-run Doctor` green; gofmt clean. mem_save from the worker hit
+  the ambiguous-session error (two workers hit it; parent mirrors via CLI).
+  Review: assessed `high` (starts other processes) → consent granted →
+  all four canonical lenses refused before execution with the same #4030
+  error (third lineage, full 4-lens reproduction) → third occurrence comment
+  (`#issuecomment-5745476921`) → exact candidate-scoped decline.
+  **DR-1 review outcome: unavailable (provider defect) — no PASS claimed.**
+
+## Next step
+
+Delivery: single PR (`size:exception` accepted) from `feat/harness-debugging`
+(9 commits) to `main` — push/PR are the user's call under ordinary policy.
+Review: retry the native review per-commit or per-slice AFTER gentle-ai#4030
+ships a fix; whole-slice candidate also exceeds the native lens context budget
+at 4526 lines, so it must be smaller candidates regardless.

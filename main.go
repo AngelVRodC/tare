@@ -1,6 +1,6 @@
 // Command tare reports which installed tooling actually costs context, read
 // from local agent transcripts — Claude Code by default, OpenCode behind
-// `tools --harness opencode`. Zero dependencies, no network.
+// `--harness opencode` on tools and doctor. Zero dependencies, no network.
 package main
 
 import (
@@ -78,9 +78,10 @@ func run(args []string, out io.Writer) error {
 	untilFlag := fs.String("until", "", "window end: bare date or full UTC RFC3339")
 	// Registered only where it means something, so `tare scan --harness
 	// opencode` is an error rather than a flag that silently does nothing:
-	// `tools` is the one command a second harness supplies.
+	// `tools` and `doctor` are the two commands a second harness supplies —
+	// each picks between two same-signature envelope readers in its case.
 	harness := harnessClaudeCode
-	if cmd == "tools" {
+	if cmd == "tools" || cmd == "doctor" {
 		fs.StringVar(&harness, "harness", harnessClaudeCode,
 			"which harness's transcripts to read: "+harnessClaudeCode+" or "+harnessOpenCode)
 	}
@@ -181,21 +182,35 @@ func run(args []string, out io.Writer) error {
 		}
 		return report.RenderFailures(out, env, top)
 	case "doctor":
-		// Claude Code transcripts and Claude Code config, like failures: the
-		// join reads mcp__ tool names and attributionMcpServer, and the
-		// static checks read the layouts only Claude Code writes. The config
-		// roots are fixed — underHome(".claude") and the working directory;
-		// --dir points at the transcript corpus the join streams, never at
-		// config. Unreadable config roots degrade to omitted blocks and
-		// warnings (DR-1's posture); a missing corpus dir is fatal like the
-		// other corpus commands. No --top/--all: the tables are bounded by
-		// the config surface, not by calls, and capping a config table
-		// hides the finding the command exists to surface.
+		// Both adapters return the same `doctor` envelope, so only the
+		// reader differs — RenderDoctor and WriteJSON are shared, the tools
+		// precedent. claude-code joins against the transcript corpus
+		// (mcp__ tool names and attributionMcpServer) and reads the config
+		// layouts only Claude Code writes; opencode joins against its
+		// database (tool names matched longest-server-first) and reads the
+		// opencode.json mcp blocks plus the skill roots it actually walks.
+		// The first argument is the harness's own root — ~/.claude for
+		// Claude Code, ~/.config/opencode for OpenCode — and the config roots
+		// are fixed there and at the working directory; --dir points at the
+		// corpus or database the join reads, never at config. Unreadable
+		// config roots degrade to omitted blocks and warnings (DR-1's
+		// posture); a missing Claude corpus is fatal like the other corpus
+		// commands, while a missing OpenCode database costs only the join
+		// block — the doctor's blocks stand alone, because unlike `tools`
+		// its data source is not one database. No --top/--all: the tables
+		// are bounded by the config surface, not by calls, and capping a
+		// config table hides the finding the command exists to surface.
 		cwd, err := os.Getwd()
 		if err != nil {
 			return err
 		}
-		env, err := report.DoctorJoinEnvelope(underHome(".claude"), cwd, dir, version, w)
+		doctorEnvelope := report.DoctorJoinEnvelope
+		harnessRoot := underHome(".claude")
+		if harness == harnessOpenCode {
+			doctorEnvelope = report.OpenCodeDoctorEnvelope
+			harnessRoot = underHome(".config", "opencode")
+		}
+		env, err := doctorEnvelope(harnessRoot, cwd, dir, version, w)
 		if err != nil {
 			return err
 		}
@@ -303,7 +318,7 @@ commands:
   attribute  tokens by skill/plugin/agent/MCP, context re-billing, attachment volume
   corruption per-tool error, empty and truncation rates, and the markers tools wrote
   failures   retry loops and the same call failing across sessions, and the tooling they cluster on
-  doctor     config health: static skill/plugin/MCP checks, and servers configured but never seen in the transcripts
+  doctor     config health: skill/plugin/MCP checks, servers configured but never seen (opencode: no plugins)
   report     all four composed into one reproducible artifact (Markdown, or --json)
 
 flags (given alone):
@@ -313,7 +328,7 @@ flags (given alone):
 flags (given after the command):
   --dir string   transcript root (default ~/.claude/projects; ~/.local/share/opencode with --harness opencode)
   --json         emit the JSON envelope instead of a table
-  --harness NAME tools only: which harness to read, claude-code (default) or opencode
+  --harness NAME tools, doctor only: which harness to read, claude-code (default) or opencode
   --since BOUND  window start: bare date YYYY-MM-DD or full UTC RFC3339 YYYY-MM-DDTHH:MM:SS.sssZ
   --until BOUND  window end: same shapes; a bare date includes the whole named day
   --top N        attribute, corruption, failures only: rows per dimension (default 15, 0 for every row)

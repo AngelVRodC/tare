@@ -34,7 +34,8 @@ consequences, decided 2026-09-06:
 
 ## Repository state
 
-Shipped and working. All five subcommands are implemented, two harnesses are read, `go.mod`
+Shipped and working. Every documented subcommand is implemented, two harnesses are read,
+`go.mod`
 is at Go 1.27, and there are zero dependencies. Never record commit, file or test **counts**
 here — they are wrong within the session that writes them. Ask git and go instead.
 
@@ -43,8 +44,9 @@ here — they are wrong within the session that writes them. Ask git and go inst
 
 A zero-dependency Go CLI that reads local agent transcripts and reports which installed
 tooling actually costs context: per-tool byte volume, per-skill/plugin/MCP attribution,
-and corruption detection. Claude Code (`~/.claude/projects/**/*.jsonl`) feeds all five
-commands; OpenCode (`~/.local/share/opencode/opencode.db`) feeds `tools` only.
+and corruption detection. Claude Code (`~/.claude/projects/**/*.jsonl`) feeds every
+corpus command; OpenCode (`~/.local/share/opencode/opencode.db`) feeds `tools` and the
+`doctor` database join.
 
 The premise is that Anthropic's OTel export redacts third-party plugin and skill names to
 `"third-party"` and user MCP servers to `"custom"`, while the un-redacted attribution sits
@@ -73,9 +75,11 @@ gofmt -l . | tee /dev/stderr | wc -l    # format check, expect 0
 go list -m all | wc -l                  # dependency count, expect 1
 ```
 
-CLI surface: `scan`, `tools`, `attribute`, `corruption`, `report`. Flags go **after** the
-command. `--dir` and `--json` are global; `--harness` is `tools` only; `--top N` and `--all`
-are `attribute` and `corruption` only. A flag is registered only where it means something, so
+CLI surface: `scan`, `tools`, `attribute`, `corruption`, `failures`, `doctor`, `report`.
+Flags go **after** the
+command. `--dir` and `--json` are global; `--harness` is `tools` and `doctor`
+only; `--top N` and `--all`
+are `attribute`, `corruption` and `failures` only. A flag is registered only where it means something, so
 `tare scan --all` is an error rather than a flag that silently does nothing. `--version` and
 `--help` are bare words matched before `fs.Parse`, not registered flags, which is why
 `tare scan --version` errors too.
@@ -105,12 +109,15 @@ main.go                 subcommand dispatch, underHome, resolveDir, usage, isTTY
 internal/transcript/    parsing: event.go, scan.go, blocks.go, usage.go, persisted.go, attachment.go
 internal/report/        metrics: scan, tools, attribute, cost, rebilling, corruption, json, artifact, exec
 internal/report/opencode.go   the second adapter: sqlite3 rollup → the same `tools` envelope
+internal/report/doctor_opencode.go   that adapter's twin for `doctor`: mcp/skills config passes + the same rollup feeding the join
 ```
 
 There is **no adapter interface and no registry**. `case "tools"` picks between
 `report.ToolsEnvelope` and `report.OpenCodeToolsEnvelope` — two functions with the same
 signature — and hands either result to the same `RenderTools`. Both emit `command: "tools"`,
-so the JSON contract does not fork per harness. `internal/transcript` was deliberately *not*
+so the JSON contract does not fork per harness. `case "doctor"` repeats the pattern with
+`report.DoctorJoinEnvelope` and `report.OpenCodeDoctorEnvelope` and the same `RenderDoctor`
+and `command: "doctor"`. `internal/transcript` was deliberately *not*
 renamed to `internal/adapter/claudecode`: zero behaviour change.
 
 Every renderer reads only the envelope, so a table and its `--json` can never disagree.

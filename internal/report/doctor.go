@@ -359,23 +359,31 @@ func (r *doctorReader) read(path string) ([]byte, error) {
 }
 
 // doctorSkills walks every skills root one level deep — <root>/<name>/SKILL.md
-// — across the user root and the two project roots. A directory without a
-// SKILL.md is not a skill (it may be a wrapper holding nested ones) and is
-// skipped without a finding: tare's posture is silence on the unknown, not a
-// complaint about a layout it does not recognise.
+// — across the user root and the two project roots.
+func (r *doctorReader) doctorSkills(claudeRoot, projectDir string) (count int, countable bool, block doctorBlock) {
+	return r.doctorSkillsAt([]string{
+		filepath.Join(claudeRoot, "skills"),
+		filepath.Join(projectDir, ".claude", "skills"),
+		filepath.Join(projectDir, ".agents", "skills"),
+	})
+}
+
+// doctorSkillsAt is the walk behind doctorSkills, taking the root list as
+// data: the OpenCode adapter hands it the four roots OpenCode itself reads
+// (see doctor_opencode.go), and both harnesses judge each SKILL.md with the
+// same doctorCheckSkill, so the frontmatter rules cannot fork per harness.
+//
+// A directory without a SKILL.md is not a skill (it may be a wrapper holding
+// nested ones) and is skipped without a finding: tare's posture is silence on
+// the unknown, not a complaint about a layout it does not recognise.
 //
 // ponytail: one level only, and symlinked dirs are not followed (a
 // ReadDir entry for a symlink reports ModeSymlink, not IsDir). Upgrade path:
 // filepath.WalkDir with a depth cap and os.Stat on symlinks, if real
 // install layouts start nesting deeper than <name>/SKILL.md.
-func (r *doctorReader) doctorSkills(claudeRoot, projectDir string) (count int, countable bool, block doctorBlock) {
+func (r *doctorReader) doctorSkillsAt(roots []string) (count int, countable bool, block doctorBlock) {
 	block.dimension = "skill"
 	block.findings = map[string][]doctorFinding{}
-	roots := []string{
-		filepath.Join(claudeRoot, "skills"),
-		filepath.Join(projectDir, ".claude", "skills"),
-		filepath.Join(projectDir, ".agents", "skills"),
-	}
 	present := 0
 	for _, root := range roots {
 		entries, err := os.ReadDir(root)
@@ -585,6 +593,45 @@ func (r *doctorReader) doctorPlugins(claudeRoot string) (count int, countable bo
 	return count, true, block
 }
 
+// mcpSrc is one config source's whole mcpServers map, labeled with the file
+// (or file-plus-section) it came from and its scope. The slice order is the
+// precedence order: later sources win name collisions.
+type mcpSrc struct {
+	label string // named in warns — file path, or path plus section
+	scope string // "user" | "project"; project entries merge last and win
+	srvs  map[string]json.RawMessage
+}
+
+// mcpEntry is one merged server definition and where it survived from.
+type mcpEntry struct {
+	raw   json.RawMessage
+	from  string
+	scope string // "user" | "project"
+}
+
+// doctorMergeMCPEntries merges mcpServers maps in precedence order and names
+// every collision, because the shadowed entry is configuration that will never
+// load. Shared by the Claude pass (four sources) and the OpenCode pass (two),
+// so the collision voice cannot drift between harnesses.
+func doctorMergeMCPEntries(srcs []mcpSrc) (merged map[string]mcpEntry, collisions []string) {
+	merged = map[string]mcpEntry{}
+	for _, s := range srcs {
+		for _, name := range slices.Sorted(maps.Keys(s.srvs)) {
+			if prev, dup := merged[name]; dup {
+				rule := fmt.Sprintf("later source wins on name collision within the %s scope", s.scope)
+				if prev.scope != s.scope {
+					rule = "project config wins on name collision"
+				}
+				collisions = append(collisions, fmt.Sprintf(
+					"mcp server %q: the entry in %s overrides the one in %s (%s)",
+					name, s.label, prev.from, rule))
+			}
+			merged[name] = mcpEntry{raw: s.srvs[name], from: s.label, scope: s.scope}
+		}
+	}
+	return merged, collisions
+}
+
 // doctorMCP merges the mcpServers maps of the four places Claude Code keeps
 // them: <claudeRoot>/settings.json and the top-level mcpServers of
 // ~/.claude.json (user scope), <projectDir>/.mcp.json and
@@ -602,21 +649,11 @@ func (r *doctorReader) doctorPlugins(claudeRoot string) (count int, countable bo
 func (r *doctorReader) doctorMCP(claudeRoot, projectDir string) (count int, countable bool, names []string, block doctorBlock) {
 	block.dimension = "mcp_server"
 	block.findings = map[string][]doctorFinding{}
-	type entry struct {
-		raw   json.RawMessage
-		from  string
-		scope string // "user" | "project"; project entries merge last and win
-	}
-	type src struct {
-		label string // named in warns — file path, or path plus section
-		scope string
-		srvs  map[string]json.RawMessage
-	}
 	settings := filepath.Join(claudeRoot, "settings.json")
 	mcpJSON := filepath.Join(projectDir, ".mcp.json")
 	claudeJSON := filepath.Join(filepath.Dir(claudeRoot), ".claude.json")
 
-	var srcs []src
+	var srcs []mcpSrc
 	broken, sawSource := false, false
 	// readPlain contributes one whole-document mcpServers map, in the
 	// standing posture: absent adds nothing silently, unreadable or
@@ -642,7 +679,7 @@ func (r *doctorReader) doctorMCP(claudeRoot, projectDir string) (count int, coun
 			return
 		}
 		sawSource = true
-		srcs = append(srcs, src{path, scope, doc.MCPServers})
+		srcs = append(srcs, mcpSrc{path, scope, doc.MCPServers})
 	}
 	readPlain(settings, "user")
 
@@ -654,7 +691,7 @@ func (r *doctorReader) doctorMCP(claudeRoot, projectDir string) (count int, coun
 	// silent like every other source; unreadable names the floor it puts
 	// under the join, because never_observed against a half-read user
 	// scope is a floor, not a verdict.
-	var local *src
+	var local *mcpSrc
 	raw, err := r.read(claudeJSON)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -679,13 +716,13 @@ func (r *doctorReader) doctorMCP(claudeRoot, projectDir string) (count int, coun
 			break
 		}
 		sawSource = true
-		srcs = append(srcs, src{claudeJSON, "user", doc.MCPServers})
+		srcs = append(srcs, mcpSrc{claudeJSON, "user", doc.MCPServers})
 		abs, absErr := filepath.Abs(projectDir)
 		if absErr != nil {
 			abs = projectDir // it arrived from Getwd or a flag; best-effort key
 		}
 		if p, ok := doc.Projects[abs]; ok {
-			local = &src{claudeJSON + ` projects["` + abs + `"]`, "project", p.MCPServers}
+			local = &mcpSrc{claudeJSON + ` projects["` + abs + `"]`, "project", p.MCPServers}
 		}
 	}
 	readPlain(mcpJSON, "project")
@@ -693,22 +730,7 @@ func (r *doctorReader) doctorMCP(claudeRoot, projectDir string) (count int, coun
 		srcs = append(srcs, *local)
 	}
 
-	merged := map[string]entry{}
-	var collisions []string
-	for _, s := range srcs {
-		for _, name := range slices.Sorted(maps.Keys(s.srvs)) {
-			if prev, dup := merged[name]; dup {
-				rule := fmt.Sprintf("later source wins on name collision within the %s scope", s.scope)
-				if prev.scope != s.scope {
-					rule = "project config wins on name collision"
-				}
-				collisions = append(collisions, fmt.Sprintf(
-					"mcp server %q: the entry in %s overrides the one in %s (%s)",
-					name, s.label, prev.from, rule))
-			}
-			merged[name] = entry{raw: s.srvs[name], from: s.label, scope: s.scope}
-		}
-	}
+	merged, collisions := doctorMergeMCPEntries(srcs)
 	// Collisions first, sorted with the pass: sources were walked user-then-
 	// project and names ascending, so this order is fixed by construction.
 	block.warns = append(block.warns, collisions...)
@@ -760,10 +782,7 @@ func doctorCheckServer(raw json.RawMessage) []doctorFinding {
 				"a stdio server has no command to launch"}}
 		}
 		if _, err := exec.LookPath(command); err != nil {
-			return []doctorFinding{{doctorCommandNotFound, fmt.Sprintf(
-				"command %q does not resolve on the PATH of the running tare process (%v); "+
-					"this check measures this process's environment, not the one the harness "+
-					"launches servers with", command, err)}}
+			return []doctorFinding{doctorLookPathFinding(command, err)}
 		}
 	case "http", "sse":
 	default:
@@ -771,6 +790,17 @@ func doctorCheckServer(raw json.RawMessage) []doctorFinding {
 			fmt.Sprintf("type %q is not one of stdio, http, sse (absent type means stdio)", spec.Type)}}
 	}
 	return nil
+}
+
+// doctorLookPathFinding is the command_not_found finding shared by both
+// harnesses' MCP passes: the PATH measured is this process's, and that caveat
+// is part of the finding, not a footnote — the harness may launch servers with
+// a different environment.
+func doctorLookPathFinding(command string, err error) doctorFinding {
+	return doctorFinding{doctorCommandNotFound, fmt.Sprintf(
+		"command %q does not resolve on the PATH of the running tare process (%v); "+
+			"this check measures this process's environment, not the one the harness "+
+			"launches servers with", command, err)}
 }
 
 // RenderDoctor prints the envelope as a table. Like every other renderer it

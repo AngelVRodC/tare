@@ -100,30 +100,48 @@ func TestCodexToolsMeasuredResultsAndMirrors(t *testing.T) {
 }
 
 func TestCodexUnknownPayloadOmitsContainingTotals(t *testing.T) {
-	dir := toolCorpus(t, cxMeta("s"),
-		cxCall(codexTestTime, "a", "mcp__sample", "read", false), cxResult(codexTestTime, "a", "known", false),
-		cxCall(codexTestTime, "b", "mcp__sample", "read", false), cxResult(codexTestTime, "b", map[string]any{"unknown": "shape"}, false),
-		cxCall(codexTestTime, "c", "", "other", false), cxResult(codexTestTime, "c", "é", false),
-	)
-	e := cxEnvelope(t, dir, Window{})
-	for _, location := range [][2]string{{"corpus", ""}, {"tool", "mcp__sample.read"}, {"mcp_server", "sample"}} {
-		for _, metric := range []string{"context_bytes", "image_bytes"} {
-			if got := metricOrNil(e, metric, location[0], location[1]); got != nil {
-				t.Errorf("partial total %s/%v = %v", metric, location, got)
+	for _, tc := range []struct {
+		name   string
+		output any
+	}{
+		{"unknown object", map[string]any{"unknown": "shape"}},
+		{"wrapped string body", map[string]any{"body": "abc", "success": true}},
+		{"wrapped block body", map[string]any{"body": []any{map[string]any{"type": "input_text", "text": "abc"}}, "success": false}},
+		{"output_text block", []any{map[string]any{"type": "output_text", "text": "abc"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := toolCorpus(t, cxMeta("s"),
+				cxCall(codexTestTime, "a", "mcp__sample", "read", false), cxResult(codexTestTime, "a", "known", false),
+				cxCall(codexTestTime, "b", "mcp__sample", "read", false), cxResult(codexTestTime, "b", tc.output, false),
+				cxCall(codexTestTime, "c", "", "other", false), cxResult(codexTestTime, "c", "é", false),
+			)
+			e := cxEnvelope(t, dir, Window{})
+			for _, location := range [][2]string{{"corpus", ""}, {"tool", "mcp__sample.read"}, {"mcp_server", "sample"}} {
+				for _, metric := range []string{"context_bytes", "image_bytes"} {
+					if got := metricOrNil(e, metric, location[0], location[1]); got != nil {
+						t.Errorf("partial total %s/%v = %v", metric, location, got)
+					}
+				}
 			}
-		}
-	}
-	if metricOrNil(e, "image_results", "corpus", "") != nil {
-		t.Error("unknown output cannot establish total image_results")
-	}
-	cxWant(t, e, "tool", "other", "context_bytes", 2)
-	cxWant(t, e, "corpus", "", "calls", 3)
-	var table bytes.Buffer
-	if err := RenderTools(&table, e); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(table.String(), "%") {
-		t.Error("unknown corpus denominator must not produce percentages")
+			if metricOrNil(e, "image_results", "corpus", "") != nil {
+				t.Error("unknown output cannot establish total image_results")
+			}
+			cxWant(t, e, "tool", "other", "context_bytes", 2)
+			cxWant(t, e, "corpus", "", "calls", 3)
+			var table bytes.Buffer
+			if err := RenderTools(&table, e); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(table.String(), "%") {
+				t.Error("unknown corpus denominator must not produce percentages")
+			}
+			warnings := strings.Join(e.Warnings, "\n")
+			for _, want := range []string{"codex image_results is omitted", "codex context_bytes is omitted", "codex image_bytes is omitted", "unmeasured payload"} {
+				if !strings.Contains(warnings, want) {
+					t.Errorf("missing warning %q", want)
+				}
+			}
+		})
 	}
 }
 
@@ -188,10 +206,10 @@ func TestCodexForkHistoryOwnership(t *testing.T) {
 	result := cxResult(codexTestTime, "a", "old", false)
 	dir := toolCorpus(t, parent, call, result)
 	// A fork copies parent-scoped records before switching to child metadata.
-	copy := strings.Join([]string{parent, call, result, child,
+	copiedHistory := strings.Join([]string{parent, call, result, child,
 		cxCall(codexTestTime, "b", "", "read", false), cxResult(codexTestTime, "b", "new", false)}, "\n")
 	p := filepath.Join(dir, "child.jsonl")
-	if err := os.WriteFile(p, []byte(copy), 0600); err != nil {
+	if err := os.WriteFile(p, []byte(copiedHistory), 0600); err != nil {
 		t.Fatal(err)
 	}
 	e := cxEnvelope(t, dir, Window{})

@@ -14,6 +14,9 @@ type Content struct {
 	TextKnown, ImageKnown, ImagesKnown bool
 }
 
+// Measure accepts the flattened string or block-array body written to rollouts.
+// Upstream FunctionCallOutputPayload in codex-rs/protocol/src/models.rs wraps
+// that body with success; the object form remains unknown if a writer emits it.
 func Measure(raw json.RawMessage) Content {
 	raw = bytes.TrimSpace(raw)
 	c := Content{TextKnown: true, ImageKnown: true, ImagesKnown: true}
@@ -60,17 +63,16 @@ func Measure(raw json.RawMessage) Content {
 	return c
 }
 
+var toolNameEscaper = strings.NewReplacer(`\`, `\\`, `.`, `\.`)
+
 // ToolName uses an escaped dot separator. Escaping dots and backslashes in
 // BOTH components distinguishes namespace=a,name=b from name=a.b. Legacy
 // names without these characters (including mcp__server__tool) stay verbatim.
 func ToolName(namespace, name string) string {
-	escape := func(s string) string {
-		return strings.NewReplacer(`\`, `\\`, `.`, `\.`).Replace(s)
-	}
 	if namespace == "" {
-		return escape(name)
+		return toolNameEscaper.Replace(name)
 	}
-	return escape(namespace) + "." + escape(name)
+	return toolNameEscaper.Replace(namespace) + "." + toolNameEscaper.Replace(name)
 }
 
 // MCPServer accepts only the explicit namespaced or legacy MCP forms.

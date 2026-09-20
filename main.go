@@ -1,6 +1,6 @@
 // Command tare reports which installed tooling actually costs context, read
-// from local agent transcripts — Claude Code by default, OpenCode and Codex
-// via tools --harness. Zero dependencies, no network.
+// from local agent transcripts — Claude Code by default, OpenCode via tools
+// and doctor --harness, and Codex via tools --harness. Zero dependencies, no network.
 package main
 
 import (
@@ -19,7 +19,7 @@ import (
 // version is the build version reported by --version and in the --json
 // envelope. A var, not a const, so a release build can set it from the git tag
 // with -ldflags "-X main.version=..."; the literal is the fallback.
-var version = "0.4.0"
+var version = "0.5.0"
 
 // defaultTop is how many rows per dimension the tables print unless told
 // otherwise. It lives here rather than in internal/report because the cap is a
@@ -79,18 +79,18 @@ func run(args []string, out io.Writer) error {
 	untilFlag := fs.String("until", "", "window end: bare date or full UTC RFC3339")
 	// Registered only where it means something, so `tare scan --harness
 	// opencode` is an error rather than a flag that silently does nothing:
-	// `tools` is the command the additional harnesses supply.
+	// `tools` and `doctor` select their supported harness readers below.
 	harness := harnessClaudeCode
-	if cmd == "tools" {
+	if cmd == "tools" || cmd == "doctor" {
 		fs.StringVar(&harness, "harness", harnessClaudeCode,
 			"which harness's transcripts to read: "+harnessClaudeCode+", "+harnessOpenCode+" or "+harnessCodex)
 	}
-	// Same rule as --harness: registered only on the two commands whose
+	// Same rule as --harness: registered only on the three commands whose
 	// tables are capped, so `tare scan --all` and `tare report --top 3` are
 	// errors rather than flags that silently do nothing.
 	var all bool
 	top := defaultTop
-	if cmd == "attribute" || cmd == "corruption" {
+	if cmd == "attribute" || cmd == "corruption" || cmd == "failures" {
 		fs.BoolVar(&all, "all", false, "print every row of every table, not just the top --top")
 		fs.IntVar(&top, "top", defaultTop, "rows per dimension in the tables; 0 prints every row")
 	}
@@ -121,6 +121,9 @@ func run(args []string, out io.Writer) error {
 	// After the parse, because the default --dir depends on --harness and both
 	// arrive in the same pass. An unknown harness is rejected here, before any
 	// command reads a corpus.
+	if cmd == "doctor" && harness != harnessClaudeCode && harness != harnessOpenCode {
+		return fmt.Errorf("unknown doctor harness %q: use %s or %s", harness, harnessClaudeCode, harnessOpenCode)
+	}
 	dir, err := resolveDir(harness, *dirFlag)
 	if err != nil {
 		return err
@@ -171,13 +174,62 @@ func run(args []string, out io.Writer) error {
 			return report.WriteJSON(out, env)
 		}
 		return report.RenderCorruption(out, env, top)
+	case "failures":
+		// Claude Code transcripts only, like corruption: the patterns are
+		// read off joined is_error results and the attribution fields of the
+		// turns that made them, and OpenCode records neither.
+		env, err := report.FailuresEnvelope(dir, version, w)
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return report.WriteJSON(out, env)
+		}
+		return report.RenderFailures(out, env, top)
+	case "doctor":
+		// Both adapters return the same `doctor` envelope, so only the
+		// reader differs — RenderDoctor and WriteJSON are shared, the tools
+		// precedent. claude-code joins against the transcript corpus
+		// (mcp__ tool names and attributionMcpServer) and reads the config
+		// layouts only Claude Code writes; opencode joins against its
+		// database (tool names matched longest-server-first) and reads the
+		// opencode.json mcp blocks plus the skill roots it actually walks.
+		// The first argument is the harness's own root — ~/.claude for
+		// Claude Code, ~/.config/opencode for OpenCode — and the config roots
+		// are fixed there and at the working directory; --dir points at the
+		// corpus or database the join reads, never at config. Unreadable
+		// config roots degrade to omitted blocks and warnings (DR-1's
+		// posture); a missing Claude corpus is fatal like the other corpus
+		// commands, while a missing OpenCode database costs only the join
+		// block — the doctor's blocks stand alone, because unlike `tools`
+		// its data source is not one database. No --top/--all: the tables
+		// are bounded by the config surface, not by calls, and capping a
+		// config table hides the finding the command exists to surface.
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		doctorEnvelope := report.DoctorJoinEnvelope
+		harnessRoot := underHome(".claude")
+		if harness == harnessOpenCode {
+			doctorEnvelope = report.OpenCodeDoctorEnvelope
+			harnessRoot = underHome(".config", "opencode")
+		}
+		env, err := doctorEnvelope(harnessRoot, cwd, dir, version, w)
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return report.WriteJSON(out, env)
+		}
+		return report.RenderDoctor(out, env)
 	case "report":
 		// Four passes over a quarter-gigabyte corpus take about four seconds
 		// with nothing printed, which reads as a hang. One line per pass to
 		// stderr fixes that without ever touching the artifact on stdout, so
 		// `> out.md` still yields a file that is only the report while the
 		// terminal shows progress. Gated on stderr being that terminal, so a
-		// piped or captured stderr stays silent. The other four commands
+		// piped or captured stderr stays silent. The other five commands
 		// finish fast enough to need none.
 		var progress io.Writer
 		if isTTY() {
@@ -276,6 +328,8 @@ commands:
   tools      per-tool call counts and context bytes; errors and produced bytes where recorded; per-plugin rollup
   attribute  tokens by skill/plugin/agent/MCP, context re-billing, attachment volume
   corruption per-tool error, empty and truncation rates, and the markers tools wrote
+  failures   retry loops and the same call failing across sessions, and the tooling they cluster on
+  doctor     config health: skill/plugin/MCP checks, servers configured but never seen (opencode: no plugins)
   report     all four composed into one reproducible artifact (Markdown, or --json)
 
 flags (given alone):
@@ -285,10 +339,10 @@ flags (given alone):
 flags (given after the command):
   --dir string   transcript root (default ~/.claude/projects; ~/.local/share/opencode for opencode; $CODEX_HOME/sessions or ~/.codex/sessions for codex)
   --json         emit the JSON envelope instead of a table
-  --harness NAME tools only: which harness to read, claude-code (default), opencode or codex
+  --harness NAME tools: claude-code (default), opencode or codex; doctor: claude-code or opencode
   --since BOUND  window start: bare date YYYY-MM-DD or full UTC RFC3339 YYYY-MM-DDTHH:MM:SS.sssZ
   --until BOUND  window end: same shapes; a bare date includes the whole named day
-  --top N        attribute, corruption only: rows per dimension (default 15, 0 for every row)
-  --all          attribute, corruption only: same as --top 0
+  --top N        attribute, corruption, failures only: rows per dimension (default 15, 0 for every row)
+  --all          attribute, corruption, failures only: same as --top 0
 `)
 }

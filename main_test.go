@@ -134,8 +134,8 @@ func TestLeadingFlagSaysOrder(t *testing.T) {
 // a quarter of a gigabyte to render nothing.
 func TestTruncationFlagsAreScoped(t *testing.T) {
 	for _, args := range [][]string{
-		{"scan", "--all"}, {"tools", "--all"}, {"report", "--all"},
-		{"scan", "--top", "3"}, {"report", "--top", "3"},
+		{"scan", "--all"}, {"tools", "--all"}, {"report", "--all"}, {"doctor", "--all"},
+		{"scan", "--top", "3"}, {"report", "--top", "3"}, {"doctor", "--top", "3"},
 	} {
 		var buf bytes.Buffer
 		if err := run(args, &buf); err == nil {
@@ -144,12 +144,14 @@ func TestTruncationFlagsAreScoped(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err := run([]string{"attribute", "--top", "-1"}, &buf)
-	if err == nil {
-		t.Fatal("run([attribute --top -1]) returned nil, want an error")
-	}
-	if !strings.Contains(err.Error(), "--top needs 0 or more rows") {
-		t.Errorf("error is %q, want it to say what a valid --top is", err)
+	for _, cmd := range []string{"attribute", "corruption", "failures"} {
+		err := run([]string{cmd, "--top", "-1"}, &buf)
+		if err == nil {
+			t.Fatalf("run([%s --top -1]) returned nil, want an error", cmd)
+		}
+		if !strings.Contains(err.Error(), "--top needs 0 or more rows") {
+			t.Errorf("error is %q, want it to say what a valid --top is", err)
+		}
 	}
 }
 
@@ -157,7 +159,7 @@ func TestTruncationFlagsAreScoped(t *testing.T) {
 // pass missed: flag reports --help as an error, so `tare scan --help` exited 1
 // to stderr while `tare --help` exited 0 to stdout.
 func TestPerCommandHelpAlsoExitsZero(t *testing.T) {
-	for _, args := range [][]string{{"scan", "--help"}, {"tools", "-h"}, {"corruption", "--help"}} {
+	for _, args := range [][]string{{"scan", "--help"}, {"tools", "-h"}, {"corruption", "--help"}, {"failures", "--help"}, {"doctor", "--help"}} {
 		var buf bytes.Buffer
 		if err := run(args, &buf); err != nil {
 			t.Errorf("run(%v) returned %v, want nil", args, err)
@@ -169,9 +171,9 @@ func TestPerCommandHelpAlsoExitsZero(t *testing.T) {
 }
 
 // TestHarnessFlagRejectedOnOtherCommands is the same scoping rule read from the
-// other side: `tools` is the command the additional harnesses supply, so naming it
-// anywhere else has to be an error rather than a flag that reads Claude Code
-// and says nothing.
+// other side: `tools` and `doctor` are the commands a second harness supplies,
+// so naming the flag anywhere else has to be an error rather than a flag that
+// reads Claude Code and says nothing.
 //
 // It asserts the parse error specifically, not merely err != nil: dropping the
 // registration guard makes `scan --harness opencode` resolve --dir to the
@@ -179,7 +181,7 @@ func TestPerCommandHelpAlsoExitsZero(t *testing.T) {
 // bare nil-check would then pass on a machine without OpenCode installed and
 // fail to catch the mutation on one that has it.
 func TestHarnessFlagRejectedOnOtherCommands(t *testing.T) {
-	for _, cmd := range []string{"scan", "attribute", "corruption", "report"} {
+	for _, cmd := range []string{"scan", "attribute", "corruption", "failures", "report"} {
 		var buf bytes.Buffer
 		err := run([]string{cmd, "--harness", "opencode"}, &buf)
 		if err == nil {
@@ -193,20 +195,45 @@ func TestHarnessFlagRejectedOnOtherCommands(t *testing.T) {
 }
 
 // TestUnknownHarnessErrors pins that a misspelling is rejected before any
-// corpus is read, and that the message names all supported values.
+// corpus is read, and that the message names the supported harnesses.
 func TestUnknownHarnessErrors(t *testing.T) {
-	var buf bytes.Buffer
-	err := run([]string{"tools", "--harness", "unknown"}, &buf)
-	if err == nil {
-		t.Fatal("run([tools --harness unknown]) returned nil, want an error")
-	}
-	for _, want := range []string{harnessClaudeCode, harnessOpenCode, harnessCodex} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error is %q, want it to name the valid value %q", err, want)
+	for _, cmd := range []string{"tools", "doctor"} {
+		var buf bytes.Buffer
+		err := run([]string{cmd, "--harness", "unknown"}, &buf)
+		if err == nil {
+			t.Fatalf("run([%s --harness unknown]) returned nil, want an error", cmd)
+		}
+		supported := []string{harnessClaudeCode, harnessOpenCode}
+		if cmd == "tools" {
+			supported = append(supported, harnessCodex)
+		}
+		for _, want := range supported {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("run([%s --harness unknown]) error is %q, want it to name the valid value %q", cmd, err, want)
+			}
+		}
+		if buf.Len() != 0 {
+			t.Errorf("an unknown harness wrote %d bytes to stdout, want none", buf.Len())
 		}
 	}
-	if buf.Len() != 0 {
-		t.Errorf("an unknown harness wrote %d bytes to stdout, want none", buf.Len())
+}
+
+func TestDoctorRejectsCodexBeforeReadingCorpus(t *testing.T) {
+	for _, extra := range [][]string{nil, {"--dir", t.TempDir(), "--json"}} {
+		var buf bytes.Buffer
+		args := append([]string{"doctor", "--harness", "codex"}, extra...)
+		err := run(args, &buf)
+		if err == nil || !strings.Contains(err.Error(), `unknown doctor harness "codex"`) {
+			t.Fatalf("run(%v) = %v, want unsupported doctor harness", args, err)
+		}
+		for _, want := range []string{harnessClaudeCode, harnessOpenCode} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not name supported harness %q", err, want)
+			}
+		}
+		if buf.Len() != 0 {
+			t.Errorf("unsupported doctor harness wrote %d bytes to stdout", buf.Len())
+		}
 	}
 }
 
@@ -246,7 +273,7 @@ func TestDefaultDirPerHarness(t *testing.T) {
 // registered globally, like --dir/--json, so no command rejects them as an
 // unknown flag. Over an empty dir every command must succeed with a window set.
 func TestSinceUntilAcceptedOnAllCommands(t *testing.T) {
-	for _, cmd := range []string{"scan", "tools", "attribute", "corruption", "report"} {
+	for _, cmd := range []string{"scan", "tools", "attribute", "corruption", "report", "doctor"} {
 		var buf bytes.Buffer
 		err := run([]string{cmd, "--dir", t.TempDir(), "--since", "2026-08-01", "--until", "2026-08-15"}, &buf)
 		if err != nil {
@@ -309,6 +336,10 @@ func TestWindowBoundFailsBeforeCorpusRead(t *testing.T) {
 // is not readable.
 func TestHarnessSelectsTheReader(t *testing.T) {
 	empty := t.TempDir()
+	// Redirect HOME so the doctor legs read fixture-shaped roots, not the
+	// real ~/.claude or ~/.config/opencode. --dir still discriminates, and
+	// the assertions below are harness-structural, not config-dependent.
+	t.Setenv("HOME", t.TempDir())
 
 	var buf bytes.Buffer
 	if err := run([]string{"tools", "--dir", empty}, &buf); err != nil {
@@ -322,5 +353,26 @@ func TestHarnessSelectsTheReader(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "opencode database not readable") {
 		t.Errorf("error is %q, want the OpenCode reader's own missing-database message", err)
+	}
+
+	// doctor's pair proves the same wiring through the opposite posture: the
+	// OpenCode doctor degrades an absent database to an omitted join with a
+	// warning, and the plugin-checks warning is text only
+	// OpenCodeDoctorEnvelope emits. Without the dispatch branch,
+	// `doctor --harness opencode` would print a Claude doctor — exit 0, all
+	// package tests green — and this line is what catches it.
+	buf.Reset()
+	if err := run([]string{"doctor", "--harness", "opencode", "--dir", empty}, &buf); err != nil {
+		t.Fatalf("doctor --harness opencode over an empty dir returned %v, want nil — the blocks stand alone", err)
+	}
+	if !strings.Contains(buf.String(), "plugin checks are claude-only") {
+		t.Errorf("opencode doctor printed no OpenCode-shaped envelope:\n%s", buf.String())
+	}
+	buf.Reset()
+	if err := run([]string{"doctor", "--dir", empty}, &buf); err != nil {
+		t.Fatalf("claude-code doctor over an empty dir returned %v, want nil", err)
+	}
+	if strings.Contains(buf.String(), "plugin checks are claude-only") {
+		t.Errorf("the Claude doctor printed the OpenCode plugin warning:\n%s", buf.String())
 	}
 }

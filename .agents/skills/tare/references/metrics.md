@@ -38,6 +38,20 @@ One value per corpus, no key:
   question is whether a tool is broken. `denial_kind` keys the denials by
   Claude Code's own `toolDenialKind` (`permission-rule`, `user-rejected`).
   Only `corruption` splits them: `tools` reports `errors` alone.
+- `failures` — pattern counts: `retry_loops`, `repeated_failure_pairs`,
+  `errored_results` (the denominator of the failure-attribution tables), and
+  `unmatched_results`. The partition above holds wherever `failures` and
+  `denied` are reported: `denied + failures == errors`. A denial still feeds
+  *pattern* detection — it cost the agent a turn and returned nothing, which
+  is what a loop looks like from the inside — and its share rides in rows of
+  its own (`consecutive_denials`, `denied`), never in the failure counts.
+- `doctor` — block denominators `skills_checked`, `plugins_checked`,
+  `mcp_servers_checked`; join denominators `mcp_sessions` or
+  `tool_sessions`. A zero on a `_checked` row is honest only when the block
+  was readable; a missing or unreadable source omits the row and says so in
+  a warning. `plugins_checked` is claude-only — under `--harness opencode`
+  it is absent with a warning, and the absence is not a claim the harness is
+  healthy. The keyed rows of both tables are below.
 
 ## Keyed dimensions
 
@@ -52,6 +66,11 @@ One value per corpus, no key:
 | `attribution_mcp_tool` | attribute | token attribution (harness field) | tokens, dollars |
 | `session` | attribute | token attribution per session id | tokens, dollars |
 | `attachment_type` (+ sub-dims `hook_name`, `skill`, `mcp_tool`, `mcp_server`, `agent`) | attribute | bytes of attached context | bytes |
+| `retry_loop` | failures | one tool + payload erroring 3+ consecutive times in one session; key `session/tool/payload-digest`, `#N` on repeats | calls |
+| `repeated_failure` | failures | one tool + payload erroring across 2+ sessions; key `tool/payload-digest` | calls, sessions |
+| `attribution_skill`, `attribution_plugin`, `attribution_mcp_server` | failures | errored calls rolled up by the calling turn's harness field — the same dimension names `attribute` emits, a different measure: counts, not tokens | calls |
+| `skill`, `plugin`, `mcp_server` | doctor | static-config findings, keyed by absolute skill path, plugin directory, or server name; the findings kinds are in the warnings | findings |
+| `mcp_server` | doctor | the cross-join misses: `never_observed` (value = the join denominator) and `unconfigured_observed` (value = the sessions that carried it) | sessions |
 
 ## Two mechanisms — never conflate them
 
@@ -87,6 +106,32 @@ Never cite one as the other.
   Quote the measured share from the run in front of you; carry the rule, never
   the number.
 
+## What the debugging rows can and cannot claim
+
+- **`never_observed` is a floor, not a verdict.** The row says: no in-window
+  session named this configured server. That is as consistent with an idle or
+  newly added server as with a broken one — and when no session used MCP at
+  all, the row is not emitted, because an absence measured against nothing
+  claims nothing.
+- **The join denominators differ by harness.** Claude Code counts sessions
+  carrying any MCP activity (`mcp_sessions`); OpenCode cannot tell an MCP
+  call from a built-in one, so it counts sessions carrying any tool call
+  (`tool_sessions`) — the wider floor, and the warning says so.
+- **`unconfigured_observed` keys are harness-dependent.** Claude Code keys
+  server names the transcripts carried and no config named. OpenCode has no
+  attribution fields, so its join is name-based over observed tool names:
+  built-in tools, plugin-provided servers, and config scopes tare does not
+  read all arrive there. Either way it is a join miss, never a claim the
+  entity is misconfigured.
+- **`command_not_found` measures the running tare process's PATH.** The
+  harness may launch servers with a different environment, so the claim is
+  "does not resolve here", not "cannot launch at all" — the warning names
+  the caveat beside the finding.
+- **Failure rows report patterns, not causes.** The payload digest in a key
+  means semantically identical calls, not byte-identical ones; which tooling
+  is at fault is the question the next agent answers, and the
+  failure-attribution rows carry only what the harness's own fields named.
+
 ## Derivation semantics
 
 `measured` means the figure is derived from transcript rows. `estimated` means
@@ -113,6 +158,8 @@ relying on the byte figures elsewhere.
 |---|---|---|
 | `tare report --json` | 829,018 bytes ≈ 207k tokens | bytes: measured; tokens: estimate (bytes/4) |
 | `tare report` default Markdown | 105,109 bytes | measured |
+| `tare failures --json` | 44,907 bytes ≈ 11k tokens | bytes: measured; tokens: estimate (bytes/4) |
+| `tare doctor --json` | 12,641 bytes ≈ 3.2k tokens | bytes: measured; tokens: estimate (bytes/4) |
 | Default tables of the four read commands combined | ~8k tokens | estimate (bytes/4) |
 
 Do not open `tare report --json` as a first read. It is a machine envelope,

@@ -89,11 +89,11 @@ No SDD artifacts. One bounded writer per task.
       stdlib-only minimal YAML (key: value lines) is sanctioned. The
       configured-but-never-seen cross-join moved to DR-2. Checks as FD-1.
       Route: delegated writer. Commit: `feat: validate harness configuration in a new doctor envelope`
-- [ ] DR-2 — `tare doctor` cross-join (servers configured but absent from the
+- [x] DR-2 — `tare doctor` cross-join (servers configured but absent from the
       corpus window), CLI wiring + renderer + docs. Includes the `~/.claude.json`
       fix (user-scope + project-scope `mcpServers`) surfaced by the live smoke.
       Checks as FD-2. Route: delegated writer. Commit: `feat: wire the doctor command into the CLI`
-- [ ] DR-3 — `tare doctor` OpenCode adapter: `--harness opencode` — validate
+- [x] DR-3 — `tare doctor` OpenCode adapter: `--harness opencode` — validate
       `mcp` blocks in `~/.config/opencode/opencode.json` + project
       `opencode.json` (server names matched longest-first like `openCodeServer`),
       cross-join configured vs observed from the OpenCode DB (sqlite3 binary,

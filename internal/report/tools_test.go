@@ -275,6 +275,42 @@ func TestToolsEnvelopeSkillCalls(t *testing.T) {
 	}
 }
 
+// TestSkillKeysNeverCanonicalized is the negative half of TestMCPCanon: a
+// skill key carrying `:` travels the skill rent and call paths VERBATIM. The
+// canonicalizer is mcp_server-only — routing skill keys through it would
+// merge distinct real entities and break the rent↔calls join.
+func TestSkillKeysNeverCanonicalized(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	dir := toolCorpus(t,
+		skillUse("2026-09-01T10:00:00.000Z", "t1", "Skill", `{"skill":"desplega:feedback"}`),
+		result("t1", `"ok"`, false),
+		attachment("2026-09-01T10:00:01.000Z",
+			`{"type":"skill_listing","names":["desplega:feedback"],`+
+				`"content":"- desplega:feedback: review work"}`),
+	)
+	env, err := ToolsEnvelope(dir, "test", Window{})
+	if err != nil {
+		t.Fatalf("ToolsEnvelope: %v", err)
+	}
+
+	if got := metricValue(t, env, "skill_calls", "skill", "desplega:feedback"); got != int64(1) {
+		t.Errorf("skill_calls/desplega:feedback = %v, want 1", got)
+	}
+	if got := metricOrNil(env, "rent_bytes", "skill", "desplega:feedback"); got == nil {
+		t.Error("skill rent lost its colon-form key")
+	}
+	for _, name := range []string{"skill_calls", "rent_bytes"} {
+		if got := metricOrNil(env, name, "skill", "desplega_feedback"); got != nil {
+			t.Errorf("%s emitted a canonicalized skill key: %v — the canonicalizer must never touch skill keys", name, got)
+		}
+	}
+}
+
 // TestUnmatchedJoin is the phase gate on the loud half of the contract: a
 // tool_result whose tool_use_id matches nothing is reported, never silently
 // dropped into a bucket or added to a tool that did not produce it. The
@@ -396,6 +432,26 @@ func TestMCPServer(t *testing.T) {
 	for _, tc := range cases {
 		if server := mcpServer(tc.name); server != tc.server {
 			t.Errorf("mcpServer(%q) = %q, want %q", tc.name, server, tc.server)
+		}
+	}
+}
+
+// TestMCPCanon covers the join canonicalizer on its own: the three characters
+// the `mcp__` tool name encodes as `_`, idempotence on the tool-name spelling
+// (already-canon in, same out), and non-mcp punctuation left alone.
+func TestMCPCanon(t *testing.T) {
+	cases := []struct{ name, want string }{
+		{"plugin:sre:k8s-qa", "plugin_sre_k8s-qa"},
+		{"claude.ai Notion", "claude_ai_Notion"},
+		{"claude.ai Slack", "claude_ai_Slack"},
+		{"claude_ai_Slack", "claude_ai_Slack"}, // idempotent on tool-name spelling
+		{"plain", "plain"},
+		{"", ""},
+		{"mcp_tool-name.v2:x y", "mcp_tool-name_v2_x_y"}, // dashes survive
+	}
+	for _, tc := range cases {
+		if got := mcpCanon(tc.name); got != tc.want {
+			t.Errorf("mcpCanon(%q) = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

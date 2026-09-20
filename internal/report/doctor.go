@@ -232,13 +232,28 @@ func doctorJoin(b *builder, w Window, corpusDir string, configured []string, con
 			w.Since(), w.Until())
 	}
 	sessions := map[string]bool{}             // any mcp activity, by session
-	perServer := map[string]map[string]bool{} // observed server → sessions
+	perServer := map[string]map[string]bool{} // canon server key → sessions
+	// display is the smallest raw spelling observed per canon key. Smallest
+	// is a total order — what TestReportReproducible needs — and it happens
+	// to prefer the attribution punctuation, because `:` (0x3A), `.` (0x2E)
+	// and space (0x20) all sort below `_` (0x5F): the row reads
+	// `claude.ai Notion` and `plugin:engram:engram`, the spellings users
+	// recognise, not the tool-name underscore spelling.
+	display := map[string]string{}
 	see := func(session, server string) {
 		sessions[session] = true
-		if perServer[server] == nil {
-			perServer[server] = map[string]bool{}
+		// Canon key: both observation channels name the same server in
+		// different spellings (mcpCanon), and one server is one key holding
+		// the union of its sessions — two spelling-keyed rows would each
+		// carry a partial count and neither would be the truth.
+		key := mcpCanon(server)
+		if perServer[key] == nil {
+			perServer[key] = map[string]bool{}
 		}
-		perServer[server][session] = true
+		perServer[key][session] = true
+		if d, ok := display[key]; !ok || server < d {
+			display[key] = server
+		}
 	}
 
 	scanStats, err := transcript.Scan(corpusDir, func(ev *transcript.Event) {
@@ -266,19 +281,29 @@ func doctorJoin(b *builder, w Window, corpusDir string, configured []string, con
 	mcpSessions := int64(len(sessions))
 	b.addWin(doctorMCPSessions, mcpSessions, "sessions")
 
-	isConfigured := make(map[string]bool, len(configured))
+	// configName is canon key → the config's own spelling. It holds exactly
+	// the key set the old raw-keyed isConfigured map held — membership still
+	// means configured — and adds the spelling never_observed displays: the
+	// string the user greps in their config file, never the canon key. Two
+	// config names canonicalizing to one server keep the smallest spelling,
+	// the observation side's total order, which also dedupes them into one
+	// key so the merged pass below cannot emit a row twice.
+	configName := make(map[string]string, len(configured))
 	for _, name := range configured {
-		isConfigured[name] = true
-	}
-	var never, unconfigured []string
-	for _, name := range configured { // already key-ascending from the pass
-		if perServer[name] == nil {
-			never = append(never, name)
+		key := mcpCanon(name)
+		if prev, ok := configName[key]; !ok || name < prev {
+			configName[key] = name
 		}
 	}
-	for _, name := range slices.Sorted(maps.Keys(perServer)) {
-		if !isConfigured[name] {
-			unconfigured = append(unconfigured, name)
+	var never, unconfigured []string // canon keys
+	for _, key := range slices.Sorted(maps.Keys(configName)) {
+		if perServer[key] == nil {
+			never = append(never, key)
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(perServer)) {
+		if _, ok := configName[key]; !ok {
+			unconfigured = append(unconfigured, key)
 		}
 	}
 	if configPartial {
@@ -298,25 +323,29 @@ func doctorJoin(b *builder, w Window, corpusDir string, configured []string, con
 		never = nil
 	}
 
-	// One merged ascending pass over both miss kinds: keys are disjoint by
-	// construction (a key is in exactly one list), so the order is total and
-	// map iteration never reaches the output.
+	// One merged ascending pass over both miss kinds: canon keys are disjoint
+	// by construction (a key is in exactly one list), so the order is total
+	// and map iteration never reaches the output. The sort key is canon; the
+	// row and warn display each key's own spelling — configName's for
+	// never_observed, the smallest observed raw spelling for
+	// unconfigured_observed.
 	misses := append(slices.Clone(never), unconfigured...)
 	slices.Sort(misses)
 	for _, key := range misses {
-		if isConfigured[key] {
-			b.rows(MeasuredMetric(doctorNeverObserved, "mcp_server", key, mcpSessions, "sessions"))
+		if name, ok := configName[key]; ok {
+			b.rows(MeasuredMetric(doctorNeverObserved, "mcp_server", name, mcpSessions, "sessions"))
 			b.warn("mcp_server %q: configured but never seen in the corpus — %d session(s) carry any "+
 				"mcp call and none names this server; either it never connected, the harness wrote no "+
 				"call for it, or the corpus window predates it; absence here is not a claim the server "+
-				"is broken", key, mcpSessions)
+				"is broken", name, mcpSessions)
 			continue
 		}
+		name := display[key]
 		n := int64(len(perServer[key]))
-		b.rows(MeasuredMetric(doctorUnconfiguredObserved, "mcp_server", key, n, "sessions"))
+		b.rows(MeasuredMetric(doctorUnconfiguredObserved, "mcp_server", name, n, "sessions"))
 		b.warn("mcp_server %q: observed in the corpus (%d mcp-using session(s)) but named by no config "+
 			"tare reads — plugin-provided servers and config scopes doctor does not read arrive here too; "+
-			"a join miss, not a claim the server is misconfigured", key, n)
+			"a join miss, not a claim the server is misconfigured", name, n)
 	}
 	return b.done(scanStats), nil
 }

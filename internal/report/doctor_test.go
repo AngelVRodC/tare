@@ -559,6 +559,92 @@ func TestDoctorJoinNeverAndUnconfigured(t *testing.T) {
 	}
 }
 
+// TestDoctorJoinCanonCollapsesSpellings is the join-truth headline: the tool
+// name channel (mcp__claude_ai_Slack__…) and the attribution channel
+// (claude.ai Slack) name ONE server, so the join must emit one row carrying
+// the UNION of their sessions — never two rows with partial counts each. The
+// row displays the smallest raw spelling seen, which is the attribution
+// punctuation because `.` and space sort below `_`.
+func TestDoctorJoinCanonCollapsesSpellings(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	corpus := toolCorpus(t,
+		// Underscore spelling arrives first: the display choice is a total
+		// order over spellings, never over arrival order.
+		useIn(tsAt(1), "s1", "u1", "mcp__claude_ai_Slack__post", cmdLS, ""),
+		useIn(tsAt(2), "s2", "u2", "Bash", cmdLS, `"attributionMcpServer":"claude.ai Slack",`),
+		useIn(tsAt(3), "s3", "u3", "mcp__claude_ai_Slack__post", cmdLS, `"attributionMcpServer":"claude.ai Slack",`),
+	)
+	env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+
+	if got := metricValue(t, env, doctorMCPSessions, "corpus", ""); got != int64(3) {
+		t.Errorf("mcp_sessions = %v, want 3 — the denominator counts sessions, canonicalization must not move it", got)
+	}
+	if got := metricValue(t, env, doctorUnconfiguredObserved, "mcp_server", "claude.ai Slack"); got != int64(3) {
+		t.Errorf("unconfigured_observed/claude.ai Slack = %v, want 3 — the union of both spellings' sessions", got)
+	}
+	if got := metricOrNil(env, doctorUnconfiguredObserved, "mcp_server", "claude_ai_Slack"); got != nil {
+		t.Errorf("the tool-name spelling emitted its own row: %v — one server is one row", got)
+	}
+	if rows := dimRows(env, "mcp_server"); len(rows) != 1 {
+		t.Errorf("mcp_server rows = %+v, want exactly one — the spellings collapsed", rows)
+	}
+	if w := doctorWarnText(env); !strings.Contains(w,
+		`mcp_server "claude.ai Slack": observed in the corpus (3 mcp-using session(s))`) {
+		t.Errorf("the warn must carry the display spelling and the union count:\n%s", w)
+	}
+}
+
+// TestDoctorJoinConfiguredColonFormJoins pins the canon-to-canon miss
+// comparison on the configured side: a config name in the harness's own
+// punctuation (plugin:sre:k8s-qa) joins an observed tool-name spelling
+// (plugin_sre_k8s-qa), so neither side reports a miss. Under the old raw-key
+// comparison this pair was BOTH a never_observed and an unconfigured_observed.
+func TestDoctorJoinConfiguredColonFormJoins(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	doctorWrite(t, filepath.Join(claudeRoot, "settings.json"),
+		`{"mcpServers":{"plugin:sre:k8s-qa":{"command":"`+doctorBinName+`"}}}`)
+	corpus := toolCorpus(t, useIn(tsAt(1), "s1", "u1", "mcp__plugin_sre_k8s-qa__get-pods", cmdLS, ""))
+	env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+
+	if got := metricValue(t, env, doctorMCPSessions, "corpus", ""); got != int64(1) {
+		t.Errorf("mcp_sessions = %v, want 1", got)
+	}
+	for _, name := range []string{"plugin:sre:k8s-qa", "plugin_sre_k8s-qa"} {
+		if got := metricOrNil(env, doctorNeverObserved, "mcp_server", name); got != nil {
+			t.Errorf("never_observed/%s = %v, want no row — observed under the other spelling", name, got)
+		}
+		if got := metricOrNil(env, doctorUnconfiguredObserved, "mcp_server", name); got != nil {
+			t.Errorf("unconfigured_observed/%s = %v, want no row — configured under the other spelling", name, got)
+		}
+	}
+	if rows := dimRows(env, "mcp_server"); len(rows) != 0 {
+		t.Errorf("a fully joined server emitted rows: %+v", rows)
+	}
+}
+
+// TestDoctorJoinNeverObservedKeepsConfigSpelling pins the other display rule:
+// never_observed shows the config's OWN spelling — the string the user greps
+// in their config file — never the canonical key.
+func TestDoctorJoinNeverObservedKeepsConfigSpelling(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	doctorWrite(t, filepath.Join(claudeRoot, "settings.json"),
+		`{"mcpServers":{"claude.ai Notion":{"type":"http","url":"https://x"}}}`)
+	// One unrelated mcp call keeps the denominator above zero so
+	// never_observed is claimable.
+	corpus := toolCorpus(t, useIn(tsAt(1), "s1", "u1", "mcp__other__ping", cmdLS, ""))
+	env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+
+	if got := metricValue(t, env, doctorNeverObserved, "mcp_server", "claude.ai Notion"); got != int64(1) {
+		t.Errorf("never_observed/claude.ai Notion = %v, want 1", got)
+	}
+	if got := metricOrNil(env, doctorNeverObserved, "mcp_server", "claude_ai_Notion"); got != nil {
+		t.Errorf("the canon key leaked into the display: %v — the config spelling is the contract", got)
+	}
+	if w := doctorWarnText(env); !strings.Contains(w, `mcp_server "claude.ai Notion": configured but never seen`) {
+		t.Errorf("the warn must name the config spelling:\n%s", w)
+	}
+}
+
 // TestDoctorJoinWindowFiltersSessions pins that the corpus scan respects
 // --since: sessions entirely outside the window leave the denominator, the
 // rows' values and the observed set, while every static row stays

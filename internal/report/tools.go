@@ -296,6 +296,32 @@ func mcpServer(name string) string {
 	return server
 }
 
+// mcpCanon canonicalizes an MCP server name to the spelling the
+// `mcp__<server>__<tool>` tool name uses: `:`, `.` and space become `_`. The
+// same server reaches tare under two spellings — mcpServer parses the
+// underscore spelling out of the tool name, while attributionMcpServer and the
+// attachment rent keys keep the harness's own punctuation (`plugin:sre:k8s-qa`,
+// `claude.ai Notion`) — so any key joining both channels must pass through
+// here first or one server splits its measurement across two rows and neither
+// row is the truth.
+//
+// mcp_server keys ONLY. Skill and plugin rent/call keys legitimately contain
+// `:` (`desplega:feedback`, `ponytail:ponytail-review`) and arrive verbatim
+// from the Skill tool input, so canonicalizing them would merge distinct real
+// entities and break the rent↔calls join. Never move this inside mcpServer
+// either: pluginServer and rentSegment match `plugin_<name>_` prefixes against
+// RAW plugin names from the authority, and a plugin name containing `.` or `:`
+// would stop matching.
+func mcpCanon(name string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ':', '.', ' ':
+			return '_'
+		}
+		return r
+	}, name)
+}
+
 // statMetrics emits up to five rows per key, heaviest context first, so the
 // table can group consecutive rows without re-sorting what the envelope
 // already ordered.

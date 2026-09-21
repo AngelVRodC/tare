@@ -253,7 +253,7 @@ Acceptance: `go test ./internal/report/` green; on a frozen corpus
 Acceptance: docs match the shipped behaviour; `usage()` unchanged (no flag
 change in this feature).
 
-### T5 — verification on a frozen corpus · [ ] pending
+### T5 — verification on a frozen corpus · [x] done
 
 Freeze `~/.claude/projects` once to a temp dir outside the repo and point
 `--dir` at the copy for every before/after comparison.
@@ -353,8 +353,30 @@ named rather than smoothed over.
   with the dated engram 0.1.2/0.1.3 evidence; both `.mcp.json` shapes with the
   `plugin:github:github` corpus proof. No counts committed; `usage()` untouched
   (verified `main.go` registers no new flag). No Go file edited;
-  `.agents/skills/tare/references/harnesses.md` still lists four MCP sources for
-  doctor — out of T4 scope, reported to the orchestrator.
+   `.agents/skills/tare/references/harnesses.md` still lists four MCP sources for
+   doctor — reported to the orchestrator, who then EXTENDED T4 to fix it (same
+   shipped behaviour, not new business scope): `docs:` commit `56a02f1` adds the
+   plugin source, the `plugin:` namespacing and the server-spelling
+   canonicalization to that file's claude-code doctor paragraph, so the published
+   skill reference no longer contradicts the code.
+
+- 2026-09-20 — T5 done. Built the "before" binary from `main` and the "after"
+  from `56a02f1`, froze `~/.claude/projects` (737 MB / 923 files) to `/tmp` and
+  pointed both at the same copy with the same live `~/.claude` config, so the
+  code is the only variable. Both bugs closed on real data; see Verification
+  evidence below. `mcp_sessions` held at 220 across the doctor run and total
+  `mcp_server` rent held byte-exact at 5,414,667 across the tools run — the
+  canonicalizer merged rows without touching either denominator.
+- 2026-09-20 — review-outcome record. Receipt-driven development is on globally
+  and T1 assessed `high` (`review_due: true`, `high_risk`), so a native 4R review
+  was due and consent was granted by the user. Every reviewer dispatch was then
+  rejected at the transport boundary (`opencode_review_transport_binding_invalid`,
+  a dispatcher that never dispatched) and did not resolve on the one authorized
+  relaunch, so the transaction is open with 0 of 4 lenses captured and the
+  reviewed boundary stays at `main`. Per that user decision ("continue T2–T5,
+  review unavailable") T2/T3/T4/T5 are each `assessed high → review unavailable`,
+  reported honestly as un-reviewed, not as approved; functional checks above are
+  the verification of record. Delivery (commit/push/PR) remains the user's call.
 
 ## Verification evidence
 
@@ -399,11 +421,44 @@ T2 and T3 (2026-09-20):
   `configured set is partial` caveat. No `plugin:engram:engram` (the installed
   0.1.3 ships no `.mcp.json` and the stale 0.1.2 cache dir was not read).
 
+T5 frozen-corpus before/after (2026-09-20) — `/tmp/tare-work`, binaries
+`tare-before` (main) and `tare-after` (56a02f1), one 737 MB copy of
+`~/.claude/projects` scanned by both:
+
+- `tare doctor --dir <frozen> --json` — `unconfigured_observed` **before 24
+  rows, after 6**. Before, every server was split across its punctuation and
+  its underscore spelling (e.g. `claude.ai Slack 2` + `claude_ai_Slack 3`,
+  neither the truth; `plugin:engram:engram 64` + `plugin_engram_engram 64`; all
+  `plugin:sre:*` doubled). After, the six survivors are exactly the "Not bugs"
+  set: `boostgraph 7`, `claude.ai Notion 11`, `claude.ai Slack 3` (the merged
+  union), `plugin:engram:engram 64`, `plugin:playwright:playwright 5`,
+  `twilio-docs 12`. The `plugin:sre:*` / `plugin:context7:*` / `plugin:github:*`
+  false positives are gone — they join now.
+- `mcp_sessions` = **220 before and after** (canonicalization touches key
+  spelling, never the session denominator). `never_observed` newly appears for
+  the six installed-but-uncalled plugin servers (figma×2, data×2, notion,
+  github) — real signal the fix surfaces, not noise.
+- `mcp_servers_checked` is **omitted after** (present before): `financial-analysis`'s
+  malformed `.mcp.json` sets the broken floor, so the count is withheld and named,
+  not zeroed — the standing posture working, and the plugin servers still join
+  under `block.partial`. The two `mcp:` warnings name the exact bad file.
+- `tare tools --dir <frozen> --json` — `claude_ai_Notion` before had 48 calls and
+  **no rent**, with a separate `claude.ai Notion` row carrying only 431,390 rent;
+  after it is one row with 48 calls **and** 431,390 rent. mcp_server keys 20→19;
+  **total rent 5,414,667 before = after (byte-conserved)**; zero twin-spelling
+  pairs and zero `:`/`.`/space keys after.
+- Gates green at HEAD: `go build ./...` clean; `go test -count=1 ./...` all
+  `ok`; `go vet ./...` clean; `gofmt -l . | wc -l` 0; `go list -m all | wc -l` 1;
+  `TestReportReproducible`, `TestReportMarkdownVariesOnlyByTimestamp`,
+  `TestValidateRejects` pass.
+
 ## Next step
 
-T5 — verification on a frozen corpus: freeze `~/.claude/projects` once to a
-temp dir outside the repo, run the full gate battery (`go build`, `go vet`,
-`go test ./...`, `gofmt`, `go list`), then the before/after `tare doctor` and
-`tare tools` comparisons listed under T5 in the Tasks section — surviving
-`unconfigured_observed` set, unchanged `mcp_sessions`, rent byte conservation,
-and the timestamp-only Markdown artifact check.
+Feature complete: T1–T5 done and verified on real data. Nothing left in the
+authorized scope. Delivery (push / PR / merge to main) is the user's call under
+ordinary repository policy; the native 4R review is still open-and-unavailable
+for this branch (boundary at `main`), so a review is owed once the transport can
+dispatch. Optional follow-ons, deliberately NOT done and needing authorization:
+home-wide `projects[*].mcpServers` (would clear `twilio-docs`), a dedicated
+classification for the permanently-unjoinable `claude.ai *` connectors, and
+`doctorPlugins`' `plugins_checked` counting top-level infra dirs.

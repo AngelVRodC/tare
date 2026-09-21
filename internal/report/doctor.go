@@ -661,10 +661,13 @@ func doctorMergeMCPEntries(srcs []mcpSrc) (merged map[string]mcpEntry, collision
 	return merged, collisions
 }
 
-// doctorMCP merges the mcpServers maps of the four places Claude Code keeps
+// doctorMCP merges the mcpServers maps of the five places Claude Code keeps
 // them: <claudeRoot>/settings.json and the top-level mcpServers of
 // ~/.claude.json (user scope), <projectDir>/.mcp.json and
-// ~/.claude.json projects["<abs projectDir>"].mcpServers (project scope).
+// ~/.claude.json projects["<abs projectDir>"].mcpServers (project scope), and
+// the servers installed plugins declare in their own <installPath>/.mcp.json
+// (plugin scope, namespaced plugin:<plugin>:<server> — see
+// doctorPluginMCPSrc).
 // The store file sits one level above claudeRoot — ~/.claude.json beside
 // ~/.claude — which is why no extra parameter threads through the
 // constructors. A later-listed source wins a name collision: project scope
@@ -758,6 +761,18 @@ func (r *doctorReader) doctorMCP(claudeRoot, projectDir string) (count int, coun
 	if local != nil {
 		srcs = append(srcs, *local)
 	}
+	// The fifth source: servers installed plugins declare in their own
+	// .mcp.json, namespaced plugin:<plugin>:<server> the way the harness names
+	// them. It joins the same posture, so its broken flag and its
+	// "exists and parsed" flag fold into this pass's.
+	pluginSrc, pluginSawSource, pluginBroken := r.doctorPluginMCPSrc(claudeRoot, &block)
+	if pluginBroken {
+		broken = true
+	}
+	if pluginSawSource {
+		sawSource = true
+		srcs = append(srcs, pluginSrc)
+	}
 
 	merged, collisions := doctorMergeMCPEntries(srcs)
 	// Collisions first, sorted with the pass: sources were walked user-then-
@@ -787,6 +802,126 @@ func (r *doctorReader) doctorMCP(claudeRoot, projectDir string) (count int, coun
 		}
 	}
 	return len(merged), true, names, block
+}
+
+// doctorPluginMCPSrc is doctorMCP's fifth source: the MCP servers installed
+// plugins declare in their own `<installPath>/.mcp.json`, which the harness
+// names `plugin:<plugin>:<server>`. Without it every such row is an
+// unconfigured_observed false positive — a warn text apologising for the gap is
+// not a fix when the file is right there.
+//
+// Every server lands in ONE mcpSrc, so a plugin with several install entries
+// cannot emit a bogus "project config wins on name collision" warning; within
+// that one source a later entry silently overwrites an earlier one for the same
+// server name, and the plugin name is part of every key, so two plugins cannot
+// overwrite each other. The source is appended last: a namespaced key cannot
+// collide with a plain config name, so precedence never reaches it, and a
+// hand-written entry of the same spelling stays the winner.
+//
+// The installPath list is the ONLY discovery path. NEVER walk
+// `<claudeRoot>/plugins/cache`: it keeps superseded version directories, so a
+// walk resurrects servers the installed version no longer ships and silently
+// swallows a genuine finding. Measured 2026-09-20: `engram@engram` is installed
+// at 0.1.3, whose installPath holds no `.mcp.json`, while the stale 0.1.2
+// directory beside it still declares an `engram` server.
+//
+// Standing posture, unchanged from every other source: absent is silent, and a
+// file that exists but cannot be read or parsed warns naming the path and sets
+// the broken floor — the harness cannot load those servers either, so it is a
+// finding, not noise.
+func (r *doctorReader) doctorPluginMCPSrc(claudeRoot string, block *doctorBlock) (mcpSrc, bool, bool) {
+	src := mcpSrc{scope: "plugin", srvs: map[string]json.RawMessage{}}
+	sawSource, broken := false, false
+	manifest := filepath.Join(claudeRoot, "plugins", "installed_plugins.json")
+	raw, err := r.read(manifest)
+	if errors.Is(err, fs.ErrNotExist) {
+		return src, false, false // no registry, no plugins, nothing to say
+	}
+	if err != nil {
+		block.warns = append(block.warns, fmt.Sprintf(
+			"mcp: %s is not readable (%v) — mcp_servers_checked is omitted, not zero", manifest, err))
+		return src, false, true
+	}
+	var registry struct {
+		Plugins map[string][]struct {
+			InstallPath string `json:"installPath"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(raw, &registry); err != nil {
+		block.warns = append(block.warns, fmt.Sprintf(
+			"mcp: %s exists but is not valid JSON (%v) — mcp_servers_checked is omitted, not zero", manifest, err))
+		return src, false, true
+	}
+	// Sorted so the read order — and therefore which .mcp.json the single
+	// source label ends up naming — is a total order, never map iteration.
+	seen := map[string]bool{} // one read per path: install entries repeat one
+	for _, key := range slices.Sorted(maps.Keys(registry.Plugins)) {
+		plugin, _, _ := strings.Cut(key, "@") // pluginNames' rule
+		if plugin == "" {
+			continue
+		}
+		for _, entry := range registry.Plugins[key] {
+			if entry.InstallPath == "" || seen[entry.InstallPath] {
+				continue
+			}
+			seen[entry.InstallPath] = true
+			path := filepath.Join(entry.InstallPath, ".mcp.json")
+			fileRaw, err := r.read(path)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue // a plugin that ships no servers is normal, not a defect
+			}
+			if err != nil {
+				block.warns = append(block.warns, fmt.Sprintf(
+					"mcp: %s is not readable (%v) — mcp_servers_checked is omitted, not zero", path, err))
+				broken = true
+				continue
+			}
+			servers, parseErr := doctorMCPServers(fileRaw)
+			if parseErr != nil {
+				block.warns = append(block.warns, fmt.Sprintf(
+					"mcp: %s exists but is not valid JSON (%v) — mcp_servers_checked is omitted, not zero", path, parseErr))
+				broken = true
+				continue
+			}
+			sawSource = true
+			src.label = path
+			for name, def := range servers {
+				src.srvs["plugin:"+plugin+":"+name] = def
+			}
+		}
+	}
+	return src, sawSource, broken
+}
+
+// doctorMCPServers reads one `.mcp.json` in either shape the harness loads.
+// The wrapped `{"mcpServers": {...}}` is the documented one; the bare top-level
+// map of server name → object is equally real, and the proof is in the corpus
+// rather than the docs: `plugin:github:github` rent exists and nothing else on
+// disk declares that name. The shape is sniffed by the presence of the
+// `mcpServers` key, never by a version field, and only an object value counts as
+// a server in the bare shape — a top-level scalar is not one.
+func doctorMCPServers(raw []byte) (map[string]json.RawMessage, error) {
+	var doc struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	if doc.MCPServers != nil {
+		return doc.MCPServers, nil
+	}
+	var bare map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &bare); err != nil {
+		return nil, err
+	}
+	servers := make(map[string]json.RawMessage, len(bare))
+	for name, def := range bare {
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(def, &obj) == nil {
+			servers[name] = def
+		}
+	}
+	return servers, nil
 }
 
 // doctorCheckServer judges one mcpServers entry. The harness sniffs its own

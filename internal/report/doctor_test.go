@@ -1006,3 +1006,213 @@ func TestDoctorClaudeJSONEmpty(t *testing.T) {
 		}
 	})
 }
+
+// doctorPluginInstall writes <claudeRoot>/plugins/installed_plugins.json in the
+// harness's own shape — {"version":2,"plugins":{"<plugin>@<marketplace>":[…]}}
+// — with one entry per install path, and returns the registry path. The paths
+// are the fixture's, so nothing here touches the measuring machine's plugins.
+func doctorPluginInstall(t *testing.T, claudeRoot string, plugins map[string][]string) string {
+	t.Helper()
+	type entry struct {
+		Scope       string `json:"scope"`
+		InstallPath string `json:"installPath"`
+		Version     string `json:"version"`
+	}
+	registry := struct {
+		Version int                `json:"version"`
+		Plugins map[string][]entry `json:"plugins"`
+	}{Version: 2, Plugins: map[string][]entry{}}
+	for key, paths := range plugins {
+		for _, p := range paths {
+			registry.Plugins[key] = append(registry.Plugins[key], entry{"user", p, "1.0.0"})
+		}
+	}
+	raw, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(claudeRoot, "plugins", "installed_plugins.json")
+	doctorWrite(t, path, string(raw))
+	return path
+}
+
+// TestDoctorPluginMCPServersConfigure is the fifth source's headline: a server
+// an installed plugin declares is CONFIGURED, so an observed
+// plugin_<plugin>_<server> tool name stops being an unconfigured_observed false
+// positive, the never-called sibling earns its never_observed row in the
+// namespaced spelling, and every entry goes through doctorCheckServer like any
+// other — a plugin stdio server whose command is not on PATH is a real finding.
+func TestDoctorPluginMCPServersConfigure(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	install := filepath.Join(claudeRoot, "plugins", "cache", "acme", "sre", "1.3.0")
+	doctorPluginInstall(t, claudeRoot, map[string][]string{"sre@acme": {install}})
+	doctorWrite(t, filepath.Join(install, ".mcp.json"), `{"mcpServers":{
+		"k8s-qa":{"command":"`+doctorBinName+`"},
+		"grafana-qa":{"type":"http","url":"https://x"},
+		"ghost":{"command":"totally-missing-binary-xyz"}}}`)
+	corpus := toolCorpus(t, useIn(tsAt(1), "s1", "u1", "mcp__plugin_sre_k8s-qa__get-pods", cmdLS, ""))
+	env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+
+	if got := metricValue(t, env, "mcp_servers_checked", "corpus", ""); got != int64(3) {
+		t.Errorf("mcp_servers_checked = %v, want 3 — plugin servers count toward the denominator", got)
+	}
+	for _, name := range []string{"plugin:sre:k8s-qa", "plugin_sre_k8s-qa"} {
+		if got := metricOrNil(env, doctorUnconfiguredObserved, "mcp_server", name); got != nil {
+			t.Errorf("unconfigured_observed/%s = %v, want no row — the plugin declares it", name, got)
+		}
+	}
+	if got := metricValue(t, env, doctorNeverObserved, "mcp_server", "plugin:sre:grafana-qa"); got != int64(1) {
+		t.Errorf("never_observed/plugin:sre:grafana-qa = %v, want 1 in the namespaced spelling", got)
+	}
+	if got := metricValue(t, env, "findings", "mcp_server", "plugin:sre:ghost"); got != int64(1) {
+		t.Errorf("findings/plugin:sre:ghost = %v, want 1 — a plugin server is checked like any other", got)
+	}
+	if got := metricOrNil(env, "findings", "mcp_server", "plugin:sre:k8s-qa"); got != nil {
+		t.Errorf("the working plugin server earned a finding: %v", got)
+	}
+	if w := doctorWarnText(env); !strings.Contains(w, "mcp_server plugin:sre:ghost: command_not_found") {
+		t.Errorf("the plugin finding must ride the warn text:\n%s", w)
+	}
+	if n := strings.Count(doctorWarnText(env), "collision"); n != 0 {
+		t.Errorf("one plugin source cannot collide with itself:\n%s", doctorWarnText(env))
+	}
+}
+
+// TestDoctorPluginMCPBareShape pins the second .mcp.json shape: a top-level map
+// of server name → object with NO mcpServers wrapper. The harness loads it —
+// the corpus carries plugin:github:github rent and nothing else declares that
+// name — so reading only the wrapped shape would leave the exact false positive
+// this source exists to kill. A top-level scalar is not a server.
+func TestDoctorPluginMCPBareShape(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	install := filepath.Join(claudeRoot, "plugins", "cache", "official", "github", "c447c3207a42")
+	doctorPluginInstall(t, claudeRoot, map[string][]string{"github@claude-plugins-official": {install}})
+	doctorWrite(t, filepath.Join(install, ".mcp.json"), `{
+		"github":{"type":"http","url":"https://api.githubcopilot.com/mcp/","headers":{"Authorization":"Bearer x"}},
+		"schemaVersion":3}`)
+	corpus := toolCorpus(t, useIn(tsAt(1), "s1", "u1", "mcp__plugin_github_github__list_issues", cmdLS, ""))
+	env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+
+	if got := metricValue(t, env, "mcp_servers_checked", "corpus", ""); got != int64(1) {
+		t.Errorf("mcp_servers_checked = %v, want 1 — the bare shape's object value, never the scalar", got)
+	}
+	if got := metricOrNil(env, doctorUnconfiguredObserved, "mcp_server", "plugin:github:github"); got != nil {
+		t.Errorf("unconfigured_observed/plugin:github:github = %v, want no row — the bare shape is configured", got)
+	}
+	if got := metricOrNil(env, "findings", "mcp_server", "plugin:github:github"); got != nil {
+		t.Errorf("an http plugin server earned a finding: %v", got)
+	}
+	if got := metricOrNil(env, "findings", "mcp_server", "plugin:github:schemaVersion"); got != nil {
+		t.Errorf("a top-level scalar was read as a server: %v", got)
+	}
+}
+
+// TestDoctorPluginMCPIgnoresCache is the trap the source is designed around:
+// <claudeRoot>/plugins/cache keeps superseded version directories, so discovery
+// follows installPath from the registry and nothing else. The installed 0.1.3
+// ships no .mcp.json while the stale 0.1.2 beside it still declares a server —
+// a cache walk would configure it and swallow a genuine finding.
+func TestDoctorPluginMCPIgnoresCache(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	current := filepath.Join(claudeRoot, "plugins", "cache", "engram", "engram", "0.1.3")
+	stale := filepath.Join(claudeRoot, "plugins", "cache", "engram", "engram", "0.1.2")
+	doctorPluginInstall(t, claudeRoot, map[string][]string{"engram@engram": {current}})
+	if err := os.MkdirAll(current, 0o755); err != nil { // installed version: no .mcp.json
+		t.Fatal(err)
+	}
+	doctorWrite(t, filepath.Join(stale, ".mcp.json"),
+		`{"mcpServers":{"engram":{"type":"http","url":"https://x"}}}`)
+	corpus := toolCorpus(t, useIn(tsAt(1), "s1", "u1", "mcp__plugin_engram_engram__ping", cmdLS, ""))
+	env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+
+	if got := metricValue(t, env, doctorUnconfiguredObserved, "mcp_server", "plugin_engram_engram"); got != int64(1) {
+		t.Errorf("unconfigured_observed/plugin_engram_engram = %v, want 1 — the superseded cache entry must not configure it", got)
+	}
+	if got := metricOrNil(env, "mcp_servers_checked", "corpus", ""); got != nil {
+		t.Errorf("mcp_servers_checked = %v, want omitted — no source parsed at all", got)
+	}
+	if w := doctorWarnText(env); strings.Contains(w, stale) {
+		t.Errorf("the superseded cache path was read:\n%s", w)
+	}
+}
+
+// TestDoctorPluginMCPBrokenFile keeps the standing posture on the new source: a
+// plugin .mcp.json that exists but does not parse warns naming the path and sets
+// the broken floor, so the count is withheld, the parsed survivors stay marked
+// partial, and no entry is judged over a floor.
+func TestDoctorPluginMCPBrokenFile(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	install := filepath.Join(claudeRoot, "plugins", "cache", "cffs", "financial-analysis", "0.1.1")
+	doctorPluginInstall(t, claudeRoot, map[string][]string{"financial-analysis@claude-for-financial-services": {install}})
+	bad := filepath.Join(install, ".mcp.json")
+	doctorWrite(t, bad, `{"mcpServers":{"box":{"type":"http"} "missing-comma":{"type":"http"}}}`)
+	doctorWrite(t, filepath.Join(claudeRoot, "settings.json"),
+		`{"mcpServers":{"weird":{"type":"websocket"}}}`)
+	corpus := toolCorpus(t, useIn(tsAt(1), "s1", "u1", "mcp__ghost__ping", cmdLS, ""))
+	env := doctorJoinEnv(t, claudeRoot, projectDir, corpus, Window{})
+
+	if got := metricOrNil(env, "mcp_servers_checked", "corpus", ""); got != nil {
+		t.Errorf("mcp_servers_checked = %v, want omitted over a floor", got)
+	}
+	w := doctorWarnText(env)
+	if !strings.Contains(w, bad) || !strings.Contains(w, "not valid JSON") {
+		t.Errorf("the malformed plugin file must be named:\n%s", w)
+	}
+	if !strings.Contains(w, "configured set is partial") {
+		t.Errorf("the join must carry its partial-config caveat:\n%s", w)
+	}
+	if got := metricOrNil(env, "findings", "mcp_server", "weird"); got != nil {
+		t.Errorf("findings were judged over a broken source: %v", got)
+	}
+	// The loud join miss still stands: a floor softens the reading, not the row.
+	if got := metricValue(t, env, doctorUnconfiguredObserved, "mcp_server", "ghost"); got != int64(1) {
+		t.Errorf("unconfigured_observed/ghost = %v, want 1", got)
+	}
+}
+
+// TestDoctorPluginMCPAbsentRegistryIsSilent pins absence as silence: no
+// installed_plugins.json earns no warning, no broken floor, and no suppression
+// of a count the other sources made measurable.
+func TestDoctorPluginMCPAbsentRegistryIsSilent(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	if err := os.MkdirAll(filepath.Join(claudeRoot, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doctorWrite(t, filepath.Join(claudeRoot, "settings.json"),
+		`{"mcpServers":{"solo":{"command":"`+doctorBinName+`"}}}`)
+	env := doctorEnv(t, claudeRoot, projectDir)
+
+	if got := metricValue(t, env, "mcp_servers_checked", "corpus", ""); got != int64(1) {
+		t.Errorf("mcp_servers_checked = %v, want 1 — an absent registry suppresses nothing", got)
+	}
+	if n := strings.Count(doctorWarnText(env), "mcp:"); n != 0 {
+		t.Errorf("an absent installed_plugins.json must be silent:\n%s", doctorWarnText(env))
+	}
+}
+
+// TestDoctorPluginMCPMultipleEntriesOneSource covers the plugin installed more
+// than once: every entry merges into ONE source, so the same server name from
+// two install paths is one server with no collision warning, and a repeated
+// installPath is read once — the corpus header counts files, not entries.
+func TestDoctorPluginMCPMultipleEntriesOneSource(t *testing.T) {
+	claudeRoot, projectDir, _ := doctorPaths(t)
+	old := filepath.Join(claudeRoot, "plugins", "cache", "mp", "ui-ux-pro-max", "2.11.0")
+	newest := filepath.Join(claudeRoot, "plugins", "cache", "mp", "ui-ux-pro-max", "2.13.0")
+	doctorPluginInstall(t, claudeRoot, map[string][]string{"ui-ux-pro-max@mp": {old, old, newest}})
+	doctorWrite(t, filepath.Join(old, ".mcp.json"), `{"mcpServers":{"srv":{"type":"http","url":"https://old"}}}`)
+	doctorWrite(t, filepath.Join(newest, ".mcp.json"), `{"mcpServers":{"srv":{"type":"http","url":"https://new"}}}`)
+	env := doctorEnv(t, claudeRoot, projectDir)
+
+	if got := metricValue(t, env, "mcp_servers_checked", "corpus", ""); got != int64(1) {
+		t.Errorf("mcp_servers_checked = %v, want 1 across three install entries", got)
+	}
+	if w := doctorWarnText(env); strings.Contains(w, "collision") {
+		t.Errorf("one plugin source must not warn about itself:\n%s", w)
+	}
+	if env.Corpus.Files != 3 {
+		t.Errorf("corpus files = %d, want 3 (registry + two .mcp.json) — a repeated installPath is read once", env.Corpus.Files)
+	}
+	if got := metricOrNil(env, "findings", "mcp_server", "plugin:ui-ux-pro-max:srv"); got != nil {
+		t.Errorf("a clean http plugin server earned a finding: %v", got)
+	}
+}

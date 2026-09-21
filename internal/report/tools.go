@@ -56,6 +56,9 @@ func ToolsEnvelope(dir, version string, w Window) (Envelope, error) {
 	// skill invocations live in their own flat maps: groupRows merges rows
 	// sharing Dimension+Key at render time, so a separate metric name is the
 	// whole join mechanism — toolStat is deliberately not extended.
+	// mcpRentRaw holds the mcp_server rent keys in the harness's own
+	// punctuation (`claude.ai Notion`); every consumer canonicalizes them with
+	// mcpCanon before they meet the call-side rows.
 	mcpRentRaw := map[string]int64{}
 	skillRent := map[string]int64{}
 	skillCalls := map[string]*int64{}
@@ -220,7 +223,19 @@ func ToolsEnvelope(dir, version string, w Window) (Envelope, error) {
 	// unreadable authority omits the whole dimension with one warning —
 	// absent is not zero.
 	pluginResolved := map[string]*toolStat{}
-	mcpRent := mcpRentRaw // authority unavailable: rent stays verbatim
+	// The authority-unavailable default: the plugin dimension is withheld, but
+	// the KEY SPELLING still canonicalizes. mcpCanon is orthogonal to plugin
+	// attribution — it only rewrites `:`, `.` and space to the `_` the
+	// `mcp__<server>__<tool>` tool name already encodes — so without this copy
+	// the one-server-two-rows split survives on any machine whose
+	// ~/.claude/settings.json is missing. The authority branch below rebuilds
+	// this map with the same canonicalization plus its segment mapping.
+	// Integer sums either way: merging keys neither loses nor doubles a byte,
+	// and Go's randomised map order cannot move one.
+	mcpRent := make(map[string]int64, len(mcpRentRaw))
+	for raw, n := range mcpRentRaw {
+		mcpRent[mcpCanon(raw)] += n
+	}
 	pluginRent := map[string]int64{}
 	if path, pathErr := pluginSettingsPath(); pathErr != nil {
 		b.warn("plugin rollup unavailable: %v — plugin rows omitted, not zeroed", pathErr)
@@ -230,12 +245,18 @@ func ToolsEnvelope(dir, version string, w Window) (Envelope, error) {
 		// Rent keys normalize here, where the names authority is already in
 		// scope: colon form joins the call-side segment and its bytes also
 		// land on the plugin dim under the plugin name (server rent is not
-		// re-counted there). Unmatched and free-form keys pass verbatim —
-		// never dropped, never zeroed. Skill rent needs no normalization.
+		// re-counted there). rentSegment's authority decision and its `plugin`
+		// return are untouched — canonicalization changes the KEY SPELLING only,
+		// which is what makes a free-form key (`claude.ai Notion`) meet its
+		// call row, and an unmatched colon key (`plugin:github:github`, its
+		// plugin installed but not enabled) meet the tool name the harness
+		// wrote for it. Never dropped, never zeroed. Skill rent needs no
+		// normalization, and pluginRent's keys are plugin NAMES — canonicalizing
+		// them would merge distinct plugins.
 		mcpRent = make(map[string]int64, len(mcpRentRaw))
 		for raw, n := range mcpRentRaw {
 			seg, plugin, ok := rentSegment(raw, names)
-			mcpRent[seg] += n
+			mcpRent[mcpCanon(seg)] += n
 			if ok {
 				pluginRent[plugin] += n
 			}
@@ -303,7 +324,12 @@ func mcpServer(name string) string {
 // attachment rent keys keep the harness's own punctuation (`plugin:sre:k8s-qa`,
 // `claude.ai Notion`) — so any key joining both channels must pass through
 // here first or one server splits its measurement across two rows and neither
-// row is the truth.
+// row is the truth. Two joins need it: doctorJoin's observation-vs-config
+// cross-join, and ToolsEnvelope's mcp_server rent-vs-calls join (both the
+// authority branch and its authority-unavailable fallback).
+//
+// A canon key with no calls stays a rent-only row with an honest `calls 0` —
+// the sanctioned rent-vs-use exception, not a defect to merge away.
 //
 // mcp_server keys ONLY. Skill and plugin rent/call keys legitimately contain
 // `:` (`desplega:feedback`, `ponytail:ponytail-review`) and arrive verbatim

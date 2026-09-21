@@ -154,12 +154,17 @@ func TestToolsEnvelopeRentJoinsCalls(t *testing.T) {
 		t.Errorf("joined server rent_bytes = %v, want 6 — plugin rent must not re-land on the server", got)
 	}
 
-	// Free-form key: verbatim, rent-only, never joined.
-	if got := metricValue(t, env, "rent_bytes", "mcp_server", "claude.ai Notion"); got != int64(8) {
-		t.Errorf("free-form rent_bytes = %v, want 8 verbatim", got)
+	// Free-form key: no authority match, so it keeps its own rent row — but
+	// under the canonical spelling, never the harness's punctuation. It is
+	// still never a plugin.
+	if got := metricValue(t, env, "rent_bytes", "mcp_server", "claude_ai_Notion"); got != int64(8) {
+		t.Errorf("free-form rent_bytes = %v, want 8 under the canonical key", got)
 	}
 	for _, m := range env.Metrics {
-		if m.Dimension == "plugin" && m.Key == "claude.ai Notion" {
+		if m.Key == "claude.ai Notion" {
+			t.Errorf("the harness's own punctuation survived as a row key: %s/%s", m.Name, m.Dimension)
+		}
+		if m.Dimension == "plugin" && m.Key == "claude_ai_Notion" {
 			t.Errorf("free-form rent leaked onto the plugin dimension")
 		}
 	}
@@ -177,8 +182,10 @@ func TestToolsEnvelopeRentJoinsCalls(t *testing.T) {
 		}
 	}
 
-	// Authority unavailable: rent prints VERBATIM, no plugin rows, one loud
-	// warning — never a zero.
+	// Authority unavailable: the plugin dimension is withheld and one loud
+	// warning says so — never a zero. The rent KEY SPELLING still
+	// canonicalizes, so the colon form lands on the call row rather than
+	// beside it. See TestToolsEnvelopeRentCanonWithoutAuthority.
 	bare := toolCorpus(t,
 		use("t1", "mcp__plugin_sre_grafana-prod__query"),
 		result("t1", `"aaaa"`, false),
@@ -190,8 +197,8 @@ func TestToolsEnvelopeRentJoinsCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ToolsEnvelope (no authority): %v", err)
 	}
-	if got := metricValue(t, env2, "rent_bytes", "mcp_server", "plugin:sre:grafana-prod"); got != int64(6) {
-		t.Errorf("unnormalized rent_bytes = %v, want 6 verbatim when the authority is unavailable", got)
+	if got := metricValue(t, env2, "rent_bytes", "mcp_server", "plugin_sre_grafana-prod"); got != int64(6) {
+		t.Errorf("rent_bytes = %v, want 6 on the canonical key when the authority is unavailable", got)
 	}
 	if got := metricOrNil(env2, "rent_bytes", "plugin", "sre"); got != nil {
 		t.Errorf("plugin rent row emitted with no authority — pluginRent must be omitted")
@@ -199,6 +206,164 @@ func TestToolsEnvelopeRentJoinsCalls(t *testing.T) {
 	warned := strings.Join(env2.Warnings, "\n")
 	if !strings.Contains(warned, "plugin rollup unavailable") {
 		t.Errorf("warnings must carry the existing loud branch: %v", env2.Warnings)
+	}
+}
+
+// totalRent sums one dimension's rent_bytes rows. Integer sums, so the total is
+// the byte-conservation assertion: canonicalizing keys merges rows, and a merge
+// that lost or doubled a byte would move this number.
+func totalRent(env Envelope, dimension string) int64 {
+	var total int64
+	for _, m := range dimRows(env, dimension) {
+		if m.Name == "rent_bytes" {
+			total += asInt64(m.Value)
+		}
+	}
+	return total
+}
+
+// countRows counts one key's rows of one metric name: a key that reaches the
+// envelope twice — once from the call side, once as a rent-only twin — is the
+// split this family of tests exists to kill.
+func countRows(env Envelope, dimension, key, name string) int {
+	n := 0
+	for _, m := range dimRows(env, dimension) {
+		if m.Key == key && m.Name == name {
+			n++
+		}
+	}
+	return n
+}
+
+// TestToolsEnvelopeRentCanonMergesOntoCallRow is the sibling-surface headline:
+// rent arriving under the harness's own punctuation (`claude.ai Notion`) lands
+// on the call row keyed off the tool name (`claude_ai_Notion`), across two
+// attachment events, as ONE row — never a rent-only twin beside a calls-only
+// row, and never a byte lost or doubled by the merge.
+func TestToolsEnvelopeRentCanonMergesOntoCallRow(t *testing.T) {
+	pluginHome(t, `{"enabledPlugins":{"sre@acme":true}}`)
+	dir := toolCorpus(t,
+		use("t1", "mcp__claude_ai_Notion__search"),
+		result("t1", `"aaaa"`, false),
+		attachment("2026-09-01T10:00:02.000Z",
+			`{"type":"mcp_instructions_delta","addedNames":["claude.ai Notion"],"addedBlocks":["INSTR1"]}`),
+		attachment("2026-09-01T10:00:03.000Z",
+			`{"type":"mcp_instructions_delta","addedNames":["claude.ai Notion"],"addedBlocks":["INSTR22"]}`),
+	)
+	env, err := ToolsEnvelope(dir, "test", Window{})
+	if err != nil {
+		t.Fatalf("ToolsEnvelope: %v", err)
+	}
+
+	if got := metricValue(t, env, "rent_bytes", "mcp_server", "claude_ai_Notion"); got != int64(13) {
+		t.Errorf("rent_bytes/claude_ai_Notion = %v, want 13 (6+7) on the call row's key", got)
+	}
+	if got := metricValue(t, env, "calls", "mcp_server", "claude_ai_Notion"); got != int64(1) {
+		t.Errorf("calls/claude_ai_Notion = %v, want 1 — the row is the called one, not a zero twin", got)
+	}
+	if n := countRows(env, "mcp_server", "claude_ai_Notion", "rent_bytes"); n != 1 {
+		t.Errorf("rent_bytes rows for claude_ai_Notion = %d, want exactly 1", n)
+	}
+	for _, m := range dimRows(env, "mcp_server") {
+		if m.Key == "claude.ai Notion" {
+			t.Errorf("the harness spelling survived as its own row: %s = %v", m.Name, m.Value)
+		}
+	}
+	if got := totalRent(env, "mcp_server"); got != 13 {
+		t.Errorf("total mcp_server rent = %v, want 13 — merging rows must conserve bytes", got)
+	}
+}
+
+// TestToolsEnvelopeRentCanonUnenabledPlugin pins the case rentSegment cannot
+// fix on its own: `plugin:github:github` stays in colon form because `github`
+// is installed but NOT in the enabledPlugins authority, so only mcpCanon can
+// put its bytes on the `plugin_github_github` row the tool name created. A
+// canon key with no calls stays a rent-only row with an honest `calls 0` — the
+// sanctioned rent-vs-use exception, not something to merge away.
+func TestToolsEnvelopeRentCanonUnenabledPlugin(t *testing.T) {
+	pluginHome(t, `{"enabledPlugins":{"sre@acme":true}}`)
+	dir := toolCorpus(t,
+		use("t1", "mcp__plugin_github_github__list_issues"),
+		result("t1", `"aaaa"`, false),
+		attachment("2026-09-01T10:00:02.000Z",
+			`{"type":"mcp_instructions_delta",`+
+				`"addedNames":["plugin:github:github","claude.ai Claude Docs"],`+
+				`"addedBlocks":["GH1","DOCS12"]}`),
+	)
+	env, err := ToolsEnvelope(dir, "test", Window{})
+	if err != nil {
+		t.Fatalf("ToolsEnvelope: %v", err)
+	}
+
+	if got := metricValue(t, env, "rent_bytes", "mcp_server", "plugin_github_github"); got != int64(3) {
+		t.Errorf("rent_bytes/plugin_github_github = %v, want 3 — colon form canonicalizes without the authority's help", got)
+	}
+	if got := metricValue(t, env, "calls", "mcp_server", "plugin_github_github"); got != int64(1) {
+		t.Errorf("calls/plugin_github_github = %v, want 1", got)
+	}
+	// Rent-only under its canon spelling, with the full measured-zero stat row.
+	if got := metricValue(t, env, "rent_bytes", "mcp_server", "claude_ai_Claude_Docs"); got != int64(6) {
+		t.Errorf("rent_bytes/claude_ai_Claude_Docs = %v, want 6", got)
+	}
+	for _, name := range []string{"calls", "context_bytes", "image_bytes", "produced_bytes", "errors"} {
+		if got := metricValue(t, env, name, "mcp_server", "claude_ai_Claude_Docs"); got != int64(0) {
+			t.Errorf("rent-only %s = %v, want an honest measured 0", name, got)
+		}
+	}
+	for _, m := range env.Metrics {
+		if m.Key == "plugin:github:github" || m.Key == "claude.ai Claude Docs" {
+			t.Errorf("the harness spelling survived as a row key: %s/%s", m.Dimension, m.Name)
+		}
+		if m.Dimension == "plugin" && m.Key == "github" {
+			t.Errorf("an unenabled plugin's rent reached the plugin dimension: %v", m.Value)
+		}
+	}
+	if got := totalRent(env, "mcp_server"); got != 9 {
+		t.Errorf("total mcp_server rent = %v, want 9 (3+6) — nothing lost or doubled", got)
+	}
+	if got := totalRent(env, "plugin"); got != 0 {
+		t.Errorf("total plugin rent = %v, want 0 — canonicalization must not create plugin attribution", got)
+	}
+}
+
+// TestToolsEnvelopeRentCanonWithoutAuthority pins the branch most easily
+// missed: when ~/.claude/settings.json is absent the plugin dimension is
+// withheld, but the mcp_server rent keys still canonicalize. Aliasing the raw
+// map here would leave the split intact on every machine without that file.
+func TestToolsEnvelopeRentCanonWithoutAuthority(t *testing.T) {
+	pluginHome(t, "") // no settings.json at all
+	dir := toolCorpus(t,
+		use("t1", "mcp__claude_ai_Notion__search"),
+		result("t1", `"aaaa"`, false),
+		attachment("2026-09-01T10:00:02.000Z",
+			`{"type":"mcp_instructions_delta",`+
+				`"addedNames":["claude.ai Notion","plugin:github:github"],`+
+				`"addedBlocks":["INSTR1","GH1"]}`),
+	)
+	env, err := ToolsEnvelope(dir, "test", Window{})
+	if err != nil {
+		t.Fatalf("ToolsEnvelope: %v", err)
+	}
+	if !strings.Contains(strings.Join(env.Warnings, "\n"), "plugin rollup unavailable") {
+		t.Fatalf("the fallback branch did not run — warnings: %v", env.Warnings)
+	}
+
+	if got := metricValue(t, env, "rent_bytes", "mcp_server", "claude_ai_Notion"); got != int64(6) {
+		t.Errorf("rent_bytes/claude_ai_Notion = %v, want 6 on the call row even with no authority", got)
+	}
+	if got := metricValue(t, env, "calls", "mcp_server", "claude_ai_Notion"); got != int64(1) {
+		t.Errorf("calls/claude_ai_Notion = %v, want 1", got)
+	}
+	if got := metricValue(t, env, "rent_bytes", "mcp_server", "plugin_github_github"); got != int64(3) {
+		t.Errorf("rent_bytes/plugin_github_github = %v, want 3", got)
+	}
+	for _, m := range env.Metrics {
+		if m.Key == "claude.ai Notion" || m.Key == "plugin:github:github" {
+			t.Errorf("the harness spelling survived the fallback branch: %s/%s", m.Dimension, m.Name)
+		}
+	}
+	if got := totalRent(env, "mcp_server"); got != 9 {
+		t.Errorf("total mcp_server rent = %v, want 9 — the fallback must conserve bytes too", got)
 	}
 }
 
@@ -289,24 +454,30 @@ func TestSkillKeysNeverCanonicalized(t *testing.T) {
 	dir := toolCorpus(t,
 		skillUse("2026-09-01T10:00:00.000Z", "t1", "Skill", `{"skill":"desplega:feedback"}`),
 		result("t1", `"ok"`, false),
+		skillUse("2026-09-01T10:00:02.000Z", "t2", "Skill", `{"skill":"sre:investigate-alert"}`),
+		result("t2", `"ok"`, false),
 		attachment("2026-09-01T10:00:01.000Z",
-			`{"type":"skill_listing","names":["desplega:feedback"],`+
-				`"content":"- desplega:feedback: review work"}`),
+			`{"type":"skill_listing","names":["desplega:feedback","sre:investigate-alert"],`+
+				`"content":"- desplega:feedback: review work\n- sre:investigate-alert: page someone"}`),
 	)
 	env, err := ToolsEnvelope(dir, "test", Window{})
 	if err != nil {
 		t.Fatalf("ToolsEnvelope: %v", err)
 	}
 
-	if got := metricValue(t, env, "skill_calls", "skill", "desplega:feedback"); got != int64(1) {
-		t.Errorf("skill_calls/desplega:feedback = %v, want 1", got)
-	}
-	if got := metricOrNil(env, "rent_bytes", "skill", "desplega:feedback"); got == nil {
-		t.Error("skill rent lost its colon-form key")
-	}
-	for _, name := range []string{"skill_calls", "rent_bytes"} {
-		if got := metricOrNil(env, name, "skill", "desplega_feedback"); got != nil {
-			t.Errorf("%s emitted a canonicalized skill key: %v — the canonicalizer must never touch skill keys", name, got)
+	for _, key := range []string{"desplega:feedback", "sre:investigate-alert"} {
+		if got := metricValue(t, env, "skill_calls", "skill", key); got != int64(1) {
+			t.Errorf("skill_calls/%s = %v, want 1", key, got)
+		}
+		if got := metricOrNil(env, "rent_bytes", "skill", key); got == nil {
+			t.Errorf("skill rent lost its colon-form key %q", key)
+		}
+		if got := metricOrNil(env, "skill_calls", "skill", mcpCanon(key)); got != nil {
+			t.Errorf("skill_calls emitted a canonicalized skill key %q: %v — the canonicalizer must never touch skill keys",
+				mcpCanon(key), got)
+		}
+		if got := metricOrNil(env, "rent_bytes", "skill", mcpCanon(key)); got != nil {
+			t.Errorf("skill rent emitted a canonicalized key %q: %v — the rent↔calls join would break", mcpCanon(key), got)
 		}
 	}
 }

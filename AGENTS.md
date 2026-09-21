@@ -158,6 +158,36 @@ zero dependencies or it argues against itself.
   OpenCode joins server and tool with a single `_` and tool names contain `_`, so `mcpServer`
   cannot be reused and the server list must come from `~/.config/opencode/opencode.json`,
   matched longest-name-first.
+- **MCP server names arrive in two spellings; `mcpCanon` is the join's answer.** The
+  `mcp__<server>__<tool>` tool name already encodes `:`, `.` and space as `_`
+  (`claude_ai_Notion`), while `attributionMcpServer` and the attachment rent keys keep the
+  harness's own punctuation (`claude.ai Notion`, `plugin:sre:k8s-qa`). Joining on the raw
+  spelling double-counts one server as two rows, each carrying a partial session count.
+  `mcpCanon` (`internal/report/tools.go`) maps those three characters to `_` and is applied at
+  both joins that meet the two channels: `doctorJoin`'s observation-vs-config cross-join, and
+  `ToolsEnvelope`'s mcp_server rent-vs-calls join — the authority branch *and* the
+  authority-unavailable fallback, or the split survives on any machine without
+  `~/.claude/settings.json`. Deliberately **mcp_server-only**: skill names legitimately
+  contain `:` (`desplega:feedback`, `ponytail:ponytail-review`) and plugin rent keys are
+  plugin names, so canonicalizing either would merge distinct real entities. Nor inside
+  `mcpServer()` itself: `pluginServer`/`rentSegment` match `plugin_<name>_` prefixes against
+  RAW plugin names from the authority, and a plugin name containing `.` or `:` would stop
+  matching. The canonicalizer changes the key spelling only — `rentSegment`'s authority-based
+  plugin attribution decision is orthogonal and untouched.
+- **`installed_plugins.json` → `installPath`, never the plugin cache.** Doctor's fifth MCP
+  source follows each registry entry's `installPath` to its `.mcp.json` and never walks
+  `~/.claude/plugins/cache`: the cache holds superseded versions. Measured 2026-09-20: the
+  installed `engram` 0.1.3 ships no `.mcp.json`, while the stale 0.1.2 directory beside it
+  still declares an `engram` server — a cache walk would silently join a server that no
+  longer exists and swallow a genuine `unconfigured_observed` finding. Servers are namespaced
+  `plugin:<plugin>:<server>`, `<plugin>` being the part before the first `@`
+  (`pluginNames`' rule), merged into one source appended last.
+- **Both `.mcp.json` shapes are loaded.** `{"mcpServers":{...}}` and the bare top-level
+  `{"<server>":{...}}` — what the official `github` plugin ships. `doctorMCPServers` sniffs
+  by presence of the `mcpServers` key, never a version field. The proof the bare shape is
+  live is in the corpus, not the docs: `plugin:github:github` rent appears in transcripts
+  and nothing else on disk declares that name, so a reader that took only the wrapped shape
+  would report it as an unconfigured false positive — the exact defect this closed.
 - **Absent is not zero, and the adapter is where that rule earns its keep.** A metric the
   harness never recorded is omitted from the envelope and named in a warning; `formatValue`
   renders an omitted metric as a blank cell. Emitting `0` would be a `measured` claim that

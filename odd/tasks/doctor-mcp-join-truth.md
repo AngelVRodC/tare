@@ -175,7 +175,7 @@ its sessions.
 Acceptance: `go test ./internal/report/` green, new tests pin the collapse and
 the display rule.
 
-### T2 — canonicalize mcp_server rent keys (Bug 1 sibling) · [ ] pending
+### T2 — canonicalize mcp_server rent keys (Bug 1 sibling) · [x] done
 
 Apply the same helper to the `mcp_server` rent keys in `ToolsEnvelope` where
 `rentSegment`'s output is accumulated, so `claude.ai Notion` rent lands on the
@@ -196,7 +196,7 @@ Acceptance: `go test ./internal/report/` green; `tare tools` on a frozen corpus
 shows no `claude.ai *` / `plugin:*` row beside an underscore row of the same
 server.
 
-### T3 — read plugin-provided MCP servers (Bug 2) · [ ] pending
+### T3 — read plugin-provided MCP servers (Bug 2) · [x] done
 
 Add a fifth source to `doctorMCP`: `~/.claude/plugins/installed_plugins.json` →
 each entry's `installPath` → `<installPath>/.mcp.json`, with servers namespaced
@@ -232,7 +232,7 @@ Acceptance: `go test ./internal/report/` green; on a frozen corpus
 `tare doctor` reports the surviving rows listed under "Not bugs" and no
 `plugin:sre:*` / `plugin:context7:*` / `plugin:github:*` row.
 
-### T4 — documentation · [ ] pending
+### T4 — documentation · [x] done
 
 - `README.md`: the doctor MCP source list (currently four sources, ~line 234)
   gains the plugin source and its `plugin:<plugin>:<server>` naming; the
@@ -296,6 +296,65 @@ named rather than smoothed over.
   `TestDoctorJoinConfiguredColonFormJoins`,
   `TestDoctorJoinNeverObservedKeepsConfigSpelling` (doctor_test.go). No
   frozen-corpus run (that is T5).
+- 2026-09-20 — T2 done. `mcpCanon` now reaches the `tare tools` rent side in
+  both branches of `ToolsEnvelope`'s post-scan resolution: the authority branch
+  accumulates under `mcpCanon(seg)` (so `rentSegment` keeps its authority-based
+  `ok` decision and its `plugin` return untouched — canonicalization changes the
+  KEY SPELLING only), and the authority-unavailable branch builds a canon-keyed
+  copy instead of aliasing `mcpRentRaw`, which is where the split would
+  otherwise survive on any machine without `~/.claude/settings.json`.
+  `pluginRent` keys stay plugin names, `skillRent`/`skillCalls` never see the
+  canonicalizer, and the call-side `servers`/`pluginSegments` buckets are
+  unchanged. A canon key with no calls stays a rent-only row with an honest
+  `calls 0`. Tests: `TestToolsEnvelopeRentCanonMergesOntoCallRow`,
+  `TestToolsEnvelopeRentCanonUnenabledPlugin`,
+  `TestToolsEnvelopeRentCanonWithoutAuthority` (tools_test.go, plus the
+  byte-conservation helpers `totalRent`/`countRows`);
+  `TestToolsEnvelopeRentJoinsCalls` had two assertions that pinned the OLD
+  verbatim spelling and were updated to the canonical one;
+  `TestSkillKeysNeverCanonicalized` extended with a second colon-form skill key
+  rather than duplicated. No frozen-corpus run (that is T5).
+- 2026-09-20 — T3 done. `doctorMCP` reads a fifth source:
+  `<claudeRoot>/plugins/installed_plugins.json` → each entry's `installPath` →
+  `<installPath>/.mcp.json`, in `doctorPluginMCPSrc` + `doctorMCPServers`
+  (doctor.go, beside their only caller). Servers are namespaced
+  `plugin:<plugin>:<server>` (`<plugin>` = the part before the first `@`,
+  `pluginNames`' rule) and merged into ONE `mcpSrc` with `scope: "plugin"`,
+  appended last, so a multi-entry plugin cannot emit a bogus collision and a
+  hand-written entry of the same spelling stays the winner. Both `.mcp.json`
+  shapes are sniffed by the presence of the `mcpServers` key; in the bare shape
+  only an object value counts as a server. Discovery follows `installPath` and
+  never walks `plugins/cache` (the engram 0.1.2/0.1.3 trap, recorded in a
+  comment at the read site). The standing posture is unchanged: an absent
+  registry is silent, an unreadable or unparseable registry or plugin
+  `.mcp.json` warns naming the path and sets the broken floor / `block.partial`,
+  an absent plugin `.mcp.json` is a silent skip. Every file goes through
+  `doctorReader.read`, and a repeated `installPath` is read once so the corpus
+  header counts files rather than entries. Plugin servers count toward
+  `mcp_servers_checked` and pass through `doctorCheckServer`.
+  `doctor_opencode.go` untouched. Tests: `TestDoctorPluginMCPServersConfigure`,
+  `TestDoctorPluginMCPBareShape`, `TestDoctorPluginMCPIgnoresCache`,
+  `TestDoctorPluginMCPBrokenFile`, `TestDoctorPluginMCPAbsentRegistryIsSilent`,
+  `TestDoctorPluginMCPMultipleEntriesOneSource` (doctor_test.go, plus the
+   `doctorPluginInstall` registry fixture helper). No frozen-corpus run (that is
+   T5).
+- 2026-09-20 — T4 done, docs only. `README.md`: the `tare doctor` source passage
+  now names five sources, with the plugin `.mcp.json` discovered via
+  `installed_plugins.json → installPath` (never the cache) and namespaced
+  `plugin:<plugin>:<server>`; the `tare tools` RENT prose says MCP-server rent
+  keys are canonicalized to the tool-name spelling, one server one row, and
+  states the MCP-server-only boundary (skill/plugin keys keep theirs); the
+  known-limits row is scoped to the `tare tools` `PLUGIN` call-side rollup
+  (authority still `enabledPlugins`) and notes the doctor join reads
+  `installed_plugins.json` directly as a different mechanism. `AGENTS.md`: three
+  bullets under the design constraints after the attribution-mechanisms one —
+  the two-spelling split and why `mcpCanon` is mcp_server-only (and not inside
+  `mcpServer()`); `installed_plugins.json` → `installPath`, never the cache,
+  with the dated engram 0.1.2/0.1.3 evidence; both `.mcp.json` shapes with the
+  `plugin:github:github` corpus proof. No counts committed; `usage()` untouched
+  (verified `main.go` registers no new flag). No Go file edited;
+  `.agents/skills/tare/references/harnesses.md` still lists four MCP sources for
+  doctor — out of T4 scope, reported to the orchestrator.
 
 ## Verification evidence
 
@@ -310,8 +369,41 @@ T1 (2026-09-20):
 - `go test -run 'TestReportReproducible|TestReportMarkdownVariesOnlyByTimestamp|TestValidateRejects' ./...`: ok github.com/AngelVRodC/tare/internal/report (root and transcript: no tests to run)
 - `go test -count=1 -run 'TestDoctorJoinCanon|TestDoctorJoinConfiguredColonForm|TestDoctorJoinNeverObservedKeeps|TestMCPCanon|TestSkillKeysNeverCanonicalized' -v ./internal/report/`: 5/5 PASS (new T1 tests, uncached)
 
+T2 and T3 (2026-09-20):
+
+- `go build ./...`: clean, no output
+- `go test -count=1 ./internal/report/`: ok github.com/AngelVRodC/tare/internal/report 0.333s
+- `go test -count=1 ./...`: ok — tare 0.170s, internal/report 0.461s, internal/transcript 0.437s
+- `go vet ./...`: clean, no output
+- `gofmt -l . | tee /dev/stderr | wc -l`: 0
+- `go list -m all | wc -l`: 1
+- `go test -count=1 -run 'TestReportReproducible|TestReportMarkdownVariesOnlyByTimestamp|TestValidateRejects' ./...`: ok github.com/AngelVRodC/tare/internal/report 0.513s (root and transcript: no tests to run); verbose: 3/3 PASS
+- `go test -count=1 -v -run 'TestToolsEnvelopeRentCanonMergesOntoCallRow|TestToolsEnvelopeRentCanonUnenabledPlugin|TestToolsEnvelopeRentCanonWithoutAuthority|TestSkillKeysNeverCanonicalized' ./internal/report/`: 4/4 PASS (uncached)
+- `go test -count=1 -v -run 'TestDoctorPluginMCPServersConfigure|TestDoctorPluginMCPBareShape|TestDoctorPluginMCPIgnoresCache|TestDoctorPluginMCPBrokenFile|TestDoctorPluginMCPAbsentRegistryIsSilent|TestDoctorPluginMCPMultipleEntriesOneSource' ./internal/report/`: 6/6 PASS (uncached)
+- `go test -count=1 ./internal/report/` after updating the two stale
+  verbatim-spelling assertions in `TestToolsEnvelopeRentJoinsCalls`: ok — that
+  test was the only pre-existing failure the change caused
+- Real-tree read-only smoke run (NOT the frozen corpus, which is T5):
+  `/tmp/tare-verify doctor --dir /tmp/tare-fixture` — a one-event fixture corpus
+  beside the measuring machine's real `~/.claude`. The new source produced
+  exactly the 13 namespaced servers predicted from the registry:
+  `plugin:context7:context7`, `plugin:data:openmetadata`, `plugin:data:redshift`,
+  `plugin:figma:figma`, `plugin:figma:figma-desktop`, `plugin:github:github`,
+  `plugin:notion:notion`, `plugin:sre:grafana-prod`, `plugin:sre:grafana-qa`,
+  `plugin:sre:jaeger-prod`, `plugin:sre:jaeger-qa`, `plugin:sre:k8s-prod`,
+  `plugin:sre:k8s-qa` — including `plugin:github:github`, which only the BARE
+  `.mcp.json` shape declares. `financial-analysis` warned as predicted:
+  `mcp: /Users/darlene/.claude/plugins/cache/claude-for-financial-services/financial-analysis/0.1.1/.mcp.json
+  exists but is not valid JSON (invalid character '"' after object key:value
+  pair) — mcp_servers_checked is omitted, not zero`, and the join carried its
+  `configured set is partial` caveat. No `plugin:engram:engram` (the installed
+  0.1.3 ships no `.mcp.json` and the stale 0.1.2 cache dir was not read).
+
 ## Next step
 
-T2 — delegate one bounded writer for the `tare tools` mcp_server rent-key
-canonicalization (`claude.ai Notion` rent onto the `claude_ai_Notion` row) and
-its tests.
+T5 — verification on a frozen corpus: freeze `~/.claude/projects` once to a
+temp dir outside the repo, run the full gate battery (`go build`, `go vet`,
+`go test ./...`, `gofmt`, `go list`), then the before/after `tare doctor` and
+`tare tools` comparisons listed under T5 in the Tasks section — surviving
+`unconfigured_observed` set, unchanged `mcp_sessions`, rent byte conservation,
+and the timestamp-only Markdown artifact check.

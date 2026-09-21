@@ -24,11 +24,17 @@ mechanism tables and nothing else.
 - **claude-code** (the default): the full static pass — SKILL.md frontmatter
   across the user and project skill roots, plugin manifests (Claude Code is
   the only harness with a manifest layout tare can validate), and MCP
-  entries from `settings.json`, `~/.claude.json` (user and project scopes)
-  and `.mcp.json` — plus the cross-join against the transcript corpus,
-  which is fatal without one, like every corpus command. Project scope wins
-  a name collision, and the warning names both files, because the shadowed
-  entry is configuration that will never load.
+  entries from `settings.json`, `~/.claude.json` (user and project scopes),
+  `.mcp.json`, and each installed plugin's own `.mcp.json` — the last read
+  via `~/.claude/plugins/installed_plugins.json → installPath` (never the
+  plugin cache, which holds superseded versions) and namespaced
+  `plugin:<plugin>:<server>`, so a plugin-provided server joins the corpus
+  instead of surfacing as unconfigured — plus the cross-join against the
+  transcript corpus, which is fatal without one, like every corpus command.
+  The join canonicalizes MCP server spellings (`:` `.` space → `_`) so one
+  server observed as both `plugin:sre:k8s-qa` and `plugin_sre_k8s-qa` is one
+  row. Project scope wins a name collision, and the warning names both files,
+  because the shadowed entry is configuration that will never load.
 - **opencode**: the same frontmatter rules over the skill roots OpenCode
   itself reads, and MCP entries from the user and project `opencode.json` —
   no plugin block, which is omitted with a warning, and absence is not

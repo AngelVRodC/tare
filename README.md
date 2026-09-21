@@ -193,7 +193,14 @@ unresolved.
 
 The `RENT` column (`rent_bytes` in `--json`) is bytes the thing costs just by
 being installed — MCP instructions, skill listings; a blank rent means it was
-never listed, and `calls=0` beside rent means installed and never called.
+never listed, and `calls=0` beside rent means installed and never called. MCP
+server rent keys are canonicalized to the tool-name spelling (`:`, `.` and
+space become `_`) before they meet the call-side rows, so a server observed
+under both its attribution punctuation (`claude.ai Notion`) and its `mcp__…`
+tool-name spelling (`claude_ai_Notion`) is one row, not two with a split
+session count. This canonicalization is MCP-server-only: skill and plugin keys
+keep their own spelling, because skill names legitimately contain `:`
+(`desplega:feedback`, `ponytail:ponytail-review`).
 
 That output is one live run. `~/.claude/projects` grows while you read it, so
 your own numbers will differ — see [Reproducibility](#reproducibility).
@@ -231,11 +238,17 @@ so `tare scan --harness opencode` is an error rather than a flag that silently
 does nothing. `scan`, `attribute`, `corruption`, `failures` and `report` read
 Claude Code and nothing else. Claude Code's `doctor` additionally reads harness
 config — `~/.claude` and the working
-directory, plus `~/.claude.json`: the MCP set merges user scope
-(`~/.claude/settings.json` and the store's top-level `mcpServers`) with project
-scope (`.mcp.json` and the store's `projects` entry for that directory),
-project winning a name collision. `--dir` never redirects any of it: `--dir`
-stays the transcript corpus the configured-but-never-seen join runs against.
+directory, plus `~/.claude.json`: the MCP set merges five sources — user scope
+(`~/.claude/settings.json` and the store's top-level `mcpServers`), project
+scope (`.mcp.json` and the store's `projects` entry for that directory), and
+the servers installed plugins declare in their own `.mcp.json`, discovered via
+`~/.claude/plugins/installed_plugins.json → installPath` (never the plugin
+cache) and namespaced `plugin:<plugin>:<server>` the way the harness names
+them, so a plugin-provided server joins against the corpus instead of surfacing
+as an unconfigured false positive. Project wins a name collision over user
+scope; plugin servers merge last and keep their namespaced spelling. `--dir`
+never redirects any of it: `--dir` stays the transcript corpus the
+configured-but-never-seen join runs against.
 `doctor --harness opencode` runs the same three kinds of pass on the OpenCode
 layout — the `mcp` blocks of `~/.config/opencode/opencode.json` and the
 project's `opencode.json` (project wins), the SKILL.md roots OpenCode reads,
@@ -470,7 +483,7 @@ its own error bars.
 | Claude Code prunes transcripts | Sessions Claude Code counted are gone from disk; `tare scan` reports the gap |
 | The same API response is written to the transcript many times | Responses are deduplicated by `message.id` before any token is summed |
 | A truncation marker is a literal substring match | A result that quotes one is a false positive; the named tools have to be checked |
-| Plugin names come from user-scope `settings.json` only | Project- and marketplace-scoped plugins are invisible to the authority, so their segments report as `plugin (unresolved)` rather than by name |
+| Plugin names for the `tare tools` `PLUGIN` rollup come from user-scope `settings.json` only | Project- and marketplace-scoped plugins are invisible to that authority, so their segments report as `plugin (unresolved)` rather than by name. `tare doctor`'s MCP join no longer depends on it — it reads `installed_plugins.json` directly; a config join, not byte attribution, so the two mechanisms stand or fall separately |
 | OpenCode records no image payload and no pre-truncation output size | Those columns are blank under `--harness opencode`, and blank means unmeasured — see [What OpenCode does not record](#what-opencode-does-not-record) |
 
 ## Dependencies

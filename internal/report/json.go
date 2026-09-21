@@ -134,6 +134,9 @@ type builder struct {
 	// whose timestamp was present. Their difference names the types a window
 	// cannot place, which time-window-3 reports as unavailable, never zero.
 	typeSeen, typeTS map[string]int64
+	// An adapter can supply a window note when session billing or timestamp
+	// semantics differ from the Claude Code default.
+	windowNote string
 }
 
 func newBuilder(dir, version, command string, w Window) *builder {
@@ -164,10 +167,16 @@ func newBuilder(dir, version, command string, w Window) *builder {
 // without timestamps cannot be placed in a window, and done() names it in the
 // C1 warning rather than counting it as zero.
 func (b *builder) seeTime(ts, evType string) {
+	b.seeTimeIncluded(ts, evType, b.win.Includes(ts))
+}
+
+// seeTimeIncluded lets an adapter compare normalized timestamps at its native
+// precision while retaining the shared corpus/window bookkeeping.
+func (b *builder) seeTimeIncluded(ts, evType string, included bool) {
 	b.typeSeen[evType]++
 	if ts != "" {
 		b.typeTS[evType]++
-		if b.win.Includes(ts) {
+		if included {
 			b.matched = true
 		}
 	}
@@ -241,7 +250,11 @@ func (b *builder) done(stats transcript.ScanStats) Envelope {
 	b.env.Corpus.Since = b.win.Since()
 	b.env.Corpus.Until = b.win.Until()
 	if b.win.Active() {
-		b.warn("%s", windowC1Warning(b.win, b.untimestampedTypes()))
+		note := b.windowNote
+		if note == "" {
+			note = windowC1Warning(b.win, b.untimestampedTypes())
+		}
+		b.warn("%s", note)
 		if !b.matched {
 			b.warn("the window matched no events — windowed counts are omitted, not zeroed; " +
 				"corpus totals remain whole-corpus")

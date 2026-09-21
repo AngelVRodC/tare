@@ -15,8 +15,9 @@ your tooling **costs**, not whether it was worth it — see
 number is tagged with how it was arrived at, and a number the harness never
 recorded is named as unavailable rather than printed as zero.
 
-Two harnesses are read: Claude Code, and [OpenCode](#opencode) behind
-`--harness opencode` on `tare tools` and `tare doctor`.
+Three harnesses are read: Claude Code, [OpenCode](#opencode) via
+`--harness opencode` on `tare tools` and `tare doctor`, and [Codex](#codex) via
+`tare tools --harness codex`.
 
 > ```bash
 > go build -o tare . && ./tare report
@@ -72,8 +73,9 @@ tool — and where two passes disagree about the same metric the artifact emits 
 warning instead of quoting the first one as the truth.
 
 All of the above is the Claude Code path. OpenCode keeps its transcripts in one
-SQLite database rather than a tree of `.jsonl`, and only `tare tools` reads it —
-see [OpenCode](#opencode).
+SQLite database rather than a tree of `.jsonl`; `tare tools` and `tare doctor` read it —
+see [OpenCode](#opencode). Codex has a separate streaming JSONL reader; see
+[Codex](#codex).
 
 ## Install
 
@@ -222,11 +224,12 @@ Flags come *after* the subcommand: `tare scan --json`, not `tare --json scan`.
 
 | Global flag | Default | Effect |
 |---|---|---|
-| `--dir` | `~/.claude/projects`; `~/.local/share/opencode` with `--harness opencode` | Transcript root to read |
+| `--dir` | `~/.claude/projects`; `~/.local/share/opencode` for OpenCode; `$CODEX_HOME/sessions` or `~/.codex/sessions` for Codex | Transcript root to read |
 | `--json` | off | Emit the JSON envelope instead of the table |
+| `--since`, `--until` | unset | Inclusive window: `YYYY-MM-DD` or full UTC `YYYY-MM-DDTHH:MM:SS.sssZ`; a bare `--until` includes the whole day |
 
-`--harness` is `tools` and `doctor` only: which harness to read,
-claude-code (default) or opencode. Registered only where it means something,
+`--harness` selects which harness to read: `tools` accepts claude-code (default),
+opencode or codex; `doctor` accepts claude-code or opencode. Registered only where it means something,
 so `tare scan --harness opencode` is an error rather than a flag that silently
 does nothing. `scan`, `attribute`, `corruption`, `failures` and `report` read
 Claude Code and nothing else. Claude Code's `doctor` additionally reads harness
@@ -242,7 +245,7 @@ project's `opencode.json` (project wins), the SKILL.md roots OpenCode reads,
 and a name-based join against `opencode.db` — with no plugin block at all:
 OpenCode has no manifest tare can validate, so the block is absent with a
 warning, never a zero. See
-[OpenCode](#opencode) for what the second reader can and cannot measure.
+[OpenCode](#opencode) and [Codex](#codex) for each reader's measurement limits.
 
 `--top N` sets how many rows each dimension prints — 15 by default, `0` for all
 of them — and `--all` is `--top 0` under another name. A table that was cut says
@@ -367,6 +370,64 @@ database and none of them are read yet. `tare attribute` stays Claude Code
 only until it is decided what a table covering one of its five dimensions is
 allowed to claim.
 
+## Codex
+
+```bash
+tare tools --harness codex
+tare tools --harness codex --since 2026-09-01 --until 2026-09-18
+tare tools --harness codex --dir /path/to/frozen-rollouts --json
+```
+
+The default is `$CODEX_HOME/sessions`, or `~/.codex/sessions` when
+`CODEX_HOME` is unset. `--dir` overrides it. Archives are not included by
+default: read them with `--dir ~/.codex/archived_sessions` (or the equivalent
+under your custom home), or place both trees in a private snapshot directory.
+No Codex process, API key, SQLite database, or additional dependency is needed.
+
+The reader streams session JSONL and joins `function_call` and
+`custom_tool_call` to their corresponding outputs by `session_meta.id` and
+`call_id`. Parent metadata can precede child metadata inside a file. Identical
+call/result copies within a session count once; conflicting copies and call
+IDs reused across explicitly related parent/child sessions fail loudly because
+ownership is ambiguous. External parent history is not expanded. Execution
+event mirrors and compaction replacement history do not count again.
+
+`context_bytes` is the decoded UTF-8 byte length of recorded output strings
+and `input_text` blocks. JSON text inside a string remains text. `image_bytes`
+counts the base64 payload of inline `input_image` data URLs, excluding the URL
+prefix; images stay separate from text. This is recorded result volume, not
+current context occupancy, model input tokens, or billed usage.
+
+Namespaced tool keys use `namespace.name`, with literal dots and backslashes
+escaped in each component so identities cannot collide. Legacy names remain
+unchanged when they need no escaping. `mcp_server` uses an explicit
+`mcp__<server>` namespace or a legacy `mcp__<server>__<tool>` name; Codex
+connector namespaces do not imply Claude Code plugin ownership.
+
+**Orchestration limits attribution.** A `functions.exec` result belongs to that
+outer tool. Nested tools may execute without returning their output to the
+model, or their outputs may be transformed or combined. The reader does not
+split those bytes among nested tools or add execution-event output again.
+MCP tables therefore cover direct calls only. Native search/discovery records
+and unknown response-item types are excluded with coverage warnings.
+
+| Unavailable | Behavior |
+|---|---|
+| `errors`, `produced_bytes`, `externalised_*` | Omitted: a complete status and production-to-delivery mapping is not established |
+| `rent_bytes`, `skill_calls`, plugin attribution | Omitted: instruction state and namespaces alone do not prove these quantities |
+| Unknown text/image payload sizes | Omitted for the affected tool, server and corpus total, rather than reporting a partial sum as complete |
+| Remote image bytes | Omitted; the image result can still be counted |
+| Token/dollar attribution, corruption, composed reports | Those commands remain Claude-Code-only |
+
+As with Claude Code, `calls` counts matched results; requested and unanswered
+calls have separate counters. Joins span the entire selected corpus even when
+`--since` or `--until` restricts aggregation. Results determine the byte/call
+window, uses determine requested/unanswered counts, and unmatched results
+remain corpus-wide. Unknown timestamps are excluded from windowed counts with
+warnings. A window matching no events omits windowed metrics rather than
+claiming zeros. Corpus files and bytes always describe the full scan; bytes
+also include any excluded JSONL files, which are reported in warnings.
+
 ## Every number is tagged
 
 Each metric carries a `derivation`:
@@ -448,11 +509,9 @@ diff a.json b.json      # no output — the two runs are byte-identical
 - **Outcome measurement.** `tare` says what your tooling costs. It cannot say
   whether it paid for itself; that needs a counterfactual (replay the task with
   the skill disabled), and it is deliberately not in this version.
-- **An adapter interface.** Two harnesses are read, and neither reaches the
-  other through an interface or a plugin registry. `tare tools` picks one of two
-  functions and hands both results to the same renderer — that is the entire
-  seam. Two readers, one of which supplies exactly one command, is not yet
-  a shape worth inventing.
+- **An adapter interface.** `tare tools` selects a reader function and hands
+  its envelope to the shared renderer. Adding Codex does not require an
+  interface or plugin registry.
 - **Anything over the network.** No pricing API, no telemetry, no update check.
   The only external process it ever starts is a local binary — `sqlite3`, to
   read the OpenCode database. A missing `sqlite3` fails `--harness opencode`

@@ -2,8 +2,9 @@
 
 Read this before quoting any metric, share, or size figure from a tare output.
 The JSON metric names are the contract: they never move between versions, and
-keyed rows print their key verbatim — tool names, session ids, and CLI
-versions in the keys are measured data, not labels.
+keyed rows render the envelope key verbatim. Codex combines recorded namespace
+and tool name with an escaped dot separator; this preserves identity without
+conflating tools whose unqualified names happen to match.
 
 ## Envelope shape
 
@@ -75,9 +76,9 @@ One value per corpus, no key:
 ## Two mechanisms — never conflate them
 
 1. **Byte mechanism** — the `tools` dimensions `tool` and `mcp_server`.
-   Attribution comes from parsing `mcp__<server>__<tool>` out of the tool
-   name, so it travels to any harness that records tool names and result
-   sizes — OpenCode included.
+   Attribution uses the harness's tool identity: Claude Code's legacy
+   `mcp__<server>__<tool>`, OpenCode's configured server prefixes, or Codex's
+   explicit MCP namespace/legacy name. No token attribution is implied.
 2. **Token mechanism** — the `attribute` dimensions `attribution_skill`,
    `attribution_plugin`, `attribution_agent`, `attribution_mcp_server`,
    `attribution_mcp_tool`. These read Claude Code's proprietary per-turn
@@ -148,6 +149,24 @@ A metric the harness never recorded is omitted from the envelope and named in
 a warning; the table renders that cell blank. Emitting `0` would be a
 `measured` claim — a blank is the honest form. When a table looks thinner than
 expected, check `warnings[]` before assuming the tool undercounted.
+
+## Codex measurement limits
+
+`context_bytes` measures recorded outer function/custom-tool result text, not
+current context occupancy or billed tokens. `image_bytes` measures inline
+base64 payloads separately, without data-URL prefixes. `calls` counts matched
+results; requested and unanswered calls have separate join counters.
+
+An unknown output form omits affected tool/server/corpus totals with warnings.
+Other fully measured tools retain their metrics, but an absent corpus total
+cannot support percentages. Remote image bytes are unavailable even when the
+image-result count is known. Errors, production/externalisation, rent, skill
+use and plugin attribution are omitted in this adapter.
+
+Nested tools inside `exec` do not inherit a share of its output bytes. The
+outer tool owns those recorded bytes; direct MCP rows exclude nested activity.
+Native/unknown response-item records are excluded with coverage warnings.
+Never interpret an omitted error metric as a zero error rate.
 
 ## Output-size cliffs
 

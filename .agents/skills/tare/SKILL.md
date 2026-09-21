@@ -39,6 +39,7 @@ is which corpus exists:
 ```bash
 ls -A ~/.claude/projects 2>/dev/null | grep -q .   # Claude Code corpus present?
 test -f ~/.local/share/opencode/opencode.db        # OpenCode corpus present?
+test -d "${CODEX_HOME:-$HOME/.codex}/sessions"       # Codex candidate root; confirm rollout JSONL exists
 ```
 
 - Claude Code corpus present → every corpus command is available, including
@@ -47,6 +48,10 @@ test -f ~/.local/share/opencode/opencode.db        # OpenCode corpus present?
 - OpenCode corpus present → `tare tools --harness opencode` and `tare doctor
   --harness opencode` are available. OpenCode cannot produce `attribution_*`;
   see references/harnesses.md.
+- Codex rollout JSONL present → `tare tools --harness codex` is available.
+  A directory alone is not a corpus. Archives require an explicit `--dir`.
+  Codex supports result bytes and joins; errors, rent and `attribution_*`
+  remain unavailable. Read references/harnesses.md for coverage limits.
 - `tare doctor` is gated one notch differently: its static config passes read
   files, not transcripts. Under `--harness opencode` they run with or without
   a database — a missing database costs only the cross-join, dropped with a
@@ -55,9 +60,8 @@ test -f ~/.local/share/opencode/opencode.db        # OpenCode corpus present?
   command.
 - Harness installed, corpus absent → emit exactly one line and claim nothing:
 
-  > OpenCode is installed but no corpus was found at
-  > ~/.local/share/opencode/opencode.db — skipping it and claiming nothing
-  > about it.
+  > <harness> is installed but no corpus was found at <expected path> —
+  > skipping it and claiming nothing about it.
 
   Run nothing that reads a corpus for that harness. Fabricate nothing. No
   metrics for a corpus that does not exist.
@@ -75,6 +79,7 @@ Flags go after the command, always: `tare <command> [flags]`.
 | How big is the corpus: files, bytes, date range, event types? | `tare scan` | one small table |
 | Which tool dominates context bytes? Which tools error? | `tare tools` | one small table |
 | Same, over the OpenCode database | `tare tools --harness opencode` | one small table |
+| Recorded Codex result bytes and call/result joins | `tare tools --harness codex` | tables plus coverage warnings |
 | How many tokens and dollars per skill, plugin, agent, MCP server? | `tare attribute` | several tables |
 | Is a tool corrupting what it returns: failures, denials, empties, truncation? | `tare corruption` | compact tables |
 | What keeps failing: retry loops, the same call erroring across sessions, failures per skill, plugin, or MCP server? | `tare failures` | compact tables |
@@ -84,8 +89,10 @@ Flags go after the command, always: `tare <command> [flags]`.
 Flag scope (a flag exists only where it means something):
 
 - `--dir <root>` and `--json` are accepted by every command.
-- `--harness claude-code|opencode` is accepted by `tools` and `doctor` only;
-  `claude-code` is the default.
+- `--since` and `--until` accept inclusive date/time bounds on every command;
+  a bare `--until` includes the whole day. Joins span the full selected corpus.
+- `--harness` accepts `claude-code` (default), `opencode` or `codex` on `tools`;
+  `doctor` accepts only `claude-code` or `opencode`.
 - `--top N` and `--all` are accepted by `attribute`, `corruption` and
   `failures` only. `tare scan --all` is an error by design, not a silently
   ignored flag.
@@ -113,7 +120,7 @@ references/metrics.md.
 
 ## Step 4 — turn a finding into an actionable
 
-A cost figure alone justifies nothing. An actionable has three parts: the
+A cost figure alone justifies nothing. Where all metrics are recorded, an actionable has three parts: the
 measured share, the error rate, and the question only the user can answer.
 
 Say "errors", not "fails", when the rate came from `tare tools`: that count
@@ -123,6 +130,11 @@ separates the two, as `denied` and `failures`.
 Refusal shape:
 
 > `<tool>` is N% of your context bytes and errors on M% of its calls.
+
+If errors or the corpus byte denominator is omitted (as errors are for Codex),
+state that it is unavailable. Never substitute zero, invent an error rate, or
+quote a percentage using a partial byte total. For Codex, call the measure
+recorded result bytes and disclose outer-exec attribution when applicable.
 
 Then the value question:
 
@@ -167,8 +179,9 @@ Any corpus that records tool names and result sizes.
    the denials taken out, read `failures` from `tare corruption` instead.
 4. Deliver the actionable in the refusal shape, then the value question.
 5. If the row is an MCP tool, check the `mcp_server` table too — bytes roll up
-   per server there. This is the byte mechanism, parsed from the
-   `mcp__<server>__<tool>` tool name; it is not the token mechanism.
+   per server there. This is the byte mechanism, resolved using the harness
+   naming convention; it is not the token mechanism. Codex MCP rows cover
+   direct calls, not tools executed inside an outer `exec` call.
 
 What not to conclude: a large share is not a verdict. The refusal shape ends
 in a question because usefulness is not in the transcript.

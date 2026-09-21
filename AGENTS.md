@@ -34,7 +34,7 @@ consequences, decided 2026-09-06:
 
 ## Repository state
 
-Shipped and working. Every documented subcommand is implemented, two harnesses are read,
+Shipped and working. Every documented subcommand is implemented, three harnesses are read,
 `go.mod`
 is at Go 1.27, and there are zero dependencies. Never record commit, file or test **counts**
 here — they are wrong within the session that writes them. Ask git and go instead.
@@ -46,7 +46,8 @@ A zero-dependency Go CLI that reads local agent transcripts and reports which in
 tooling actually costs context: per-tool byte volume, per-skill/plugin/MCP attribution,
 and corruption detection. Claude Code (`~/.claude/projects/**/*.jsonl`) feeds every
 corpus command; OpenCode (`~/.local/share/opencode/opencode.db`) feeds `tools` and the
-`doctor` database join.
+`doctor` database join. Codex (`$CODEX_HOME/sessions`, default
+`~/.codex/sessions`) feeds `tools` only.
 
 The premise is that Anthropic's OTel export redacts third-party plugin and skill names to
 `"third-party"` and user MCP servers to `"custom"`, while the un-redacted attribution sits
@@ -76,9 +77,9 @@ go list -m all | wc -l                  # dependency count, expect 1
 ```
 
 CLI surface: `scan`, `tools`, `attribute`, `corruption`, `failures`, `doctor`, `report`.
-Flags go **after** the
-command. `--dir` and `--json` are global; `--harness` is `tools` and `doctor`
-only; `--top N` and `--all`
+Flags go **after** the command. `--dir`, `--json`, `--since` and `--until` are global;
+`--harness` is `tools` (`claude-code`, `opencode`, `codex`) and `doctor`
+(`claude-code`, `opencode`) only; `--top N` and `--all`
 are `attribute`, `corruption` and `failures` only. A flag is registered only where it means something, so
 `tare scan --all` is an error rather than a flag that silently does nothing. `--version` and
 `--help` are bare words matched before `fs.Parse`, not registered flags, which is why
@@ -108,13 +109,15 @@ dispatch. `main` package at the root, `internal/` only — no `cmd/`.
 main.go                 subcommand dispatch, underHome, resolveDir, usage, isTTY
 internal/transcript/    parsing: event.go, scan.go, blocks.go, usage.go, persisted.go, attachment.go
 internal/report/        metrics: scan, tools, attribute, cost, rebilling, corruption, json, artifact, exec
-internal/report/opencode.go   the second adapter: sqlite3 rollup → the same `tools` envelope
-internal/report/doctor_opencode.go   that adapter's twin for `doctor`: mcp/skills config passes + the same rollup feeding the join
+internal/report/opencode.go   OpenCode: sqlite3 rollup → the same `tools` envelope
+internal/report/doctor_opencode.go   OpenCode doctor: config passes and database join
+internal/codex/          Codex rollout streaming, identity and payload measurement
+internal/report/codex.go Codex: session-scoped joins → the same `tools` envelope
 ```
 
 There is **no adapter interface and no registry**. `case "tools"` picks between
-`report.ToolsEnvelope` and `report.OpenCodeToolsEnvelope` — two functions with the same
-signature — and hands either result to the same `RenderTools`. Both emit `command: "tools"`,
+`report.ToolsEnvelope`, `report.OpenCodeToolsEnvelope` and `report.CodexToolsEnvelope` —
+functions with the same signature — and hands the result to `RenderTools`. All emit `command: "tools"`,
 so the JSON contract does not fork per harness. `case "doctor"` repeats the pattern with
 `report.DoctorJoinEnvelope` and `report.OpenCodeDoctorEnvelope` and the same `RenderDoctor`
 and `command: "doctor"`. `internal/transcript` was deliberately *not*
@@ -154,7 +157,7 @@ zero dependencies or it argues against itself.
   on that turn — never that tare failed to attribute. Byte attribution (`tare tools`) parses
   `mcp__<server>__<tool>` out of the tool name via `mcpServer` and travels to any harness that
   records tool names and result sizes. Do not conflate them when planning an adapter.
-  Mechanism 2 has two implementations; mechanism 1 has one. The MCP split did *not* travel:
+  Mechanism 2 has three implementations; mechanism 1 has one. The MCP split did *not* travel:
   OpenCode joins server and tool with a single `_` and tool names contain `_`, so `mcpServer`
   cannot be reused and the server list must come from `~/.config/opencode/opencode.json`,
   matched longest-name-first.
@@ -231,6 +234,33 @@ zero dependencies or it argues against itself.
 - Do not read `~/.claude/stats-cache.json` for cost — every `costUSD` in it is zero. Use
   `cost-state` events.
 
+## Codex adapter decisions
+
+- `tools --harness codex` reads active session rollouts by default. Explicit
+  `--dir` overrides `$CODEX_HOME/sessions` / `~/.codex/sessions`; archives are
+  opt-in via `--dir`. No authentication, configuration or state database reads.
+- Join function/custom calls and outputs on `session_meta.id` plus `call_id`,
+  not the wider `session_id`. Session metadata can switch parent to child
+  inside a file. Exact payload copies at the same timestamp count once;
+  conflicting copies, type mismatches and reused call IDs across recorded
+  ancestry are ambiguous and fail. External history references are not followed.
+- Namespaced tool keys escape literal dots/backslashes and join with a dot.
+  MCP ownership comes only from explicit namespaces or legacy MCP names.
+  Do not infer Codex plugin ownership from Claude Code's plugin convention.
+- Count recorded outer result text and inline base64 separately. Unknown
+  payloads taint their tool/server/corpus size totals, which are omitted with
+  warnings. Do not convert remote image URLs into measured image byte zeros.
+- Orchestrated output belongs to the outer `exec` call. Execution mirrors,
+  nested tool events and compaction replacement histories are not additive
+  result streams. Native/unknown response-item types receive coverage warnings.
+- Errors, production/externalisation, rent, skill use and token/dollar
+  attribution remain unavailable in this adapter. Codex does record compaction
+  and instruction/usage state; their interpretation is future work, not an
+  extension of Claude Code's measured absence of compaction.
+- Codex timestamps normalize to fixed nanosecond UTC precision before window
+  comparisons. Its window note makes no claim about session billing. The
+  existing Claude Code and OpenCode comparison behavior is unchanged.
+
 ## Gates that must not break
 
 - `TestReportReproducible` — 8 runs over one corpus must produce byte-identical JSON. It
@@ -291,8 +321,8 @@ embeds newlines inside `content` strings, so `rg -c` on it returns a wrong numbe
 Claude Code is the one harness that reads **only** `.claude/skills/` — it does not scan
 `.agents/skills/`, and the request to add it was closed `not_planned`
 (`anthropics/claude-code#66352`). So `.claude/skills/` is the path with the widest reach for
-the two harnesses tare actually reads, and duplicating into `.agents/skills/` would buy Codex
-at the cost of two copies to keep in sync. Note the `allowed-tools` values are Claude Code
+Claude Code and OpenCode. Codex can read these files when directed by repository
+instructions; duplicating them into `.agents/skills/` would add copies to keep in sync. Note the `allowed-tools` values are Claude Code
 syntax; other harnesses parse `name` and `description` and are not required to honour them.
 
 `golang-project-layout` was installed and then **deliberately removed — do not re-add it.**
